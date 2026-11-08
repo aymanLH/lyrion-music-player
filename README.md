@@ -28,11 +28,17 @@
 - Enhance your listening experience with synchronized lyrics from [LRCLIB](https://lrclib.net/)
 - Manually update track details or fetch accurate info from [MusicBrainz](https://musicbrainz.org/)
 - Designed with [Material You](https://m3.material.io/) and supports dynamic color palettes
+- Search YouTube, preview audio, and download tracks or selected playlist items to your local library
+- Manage downloads with a queue, progress notifications, and download history
+- Choose download format and quality; OPUS is the default
 
 ## Download
-Latest stable version is available on [GitHub releases](https://github.com/dn0ne/lotus/releases/latest)
+Get the latest Lyrion builds from [this repository's GitHub Releases](https://github.com/aymanLH/lotus-music-player/releases/latest). Choose the APK that matches your device:
 
-Stable releases are also available on [F-Droid](https://f-droid.org/packages/com.dn0ne.lotus)
+- **32-bit ARM:** `armeabi-v7a`
+- **64-bit ARM:** `arm64-v8a`
+
+Version 1.3.0 is the current release.
 
 ## Support
 If you enjoy using Lyrion, consider [buying me a coffee](https://en.liberapay.com/dn0ne/donate)!
@@ -41,7 +47,7 @@ If you enjoy using Lyrion, consider [buying me a coffee](https://en.liberapay.co
 1. **Get the Source Code**  
    - Clone the repository or download the source code:
      ```bash
-     git clone https://github.com/dn0ne/lotus.git
+     git clone https://github.com/aymanLH/lotus-music-player.git
      ```
 
 2. **Open project in Android Studio**  
@@ -57,6 +63,8 @@ If you enjoy using Lyrion, consider [buying me a coffee](https://en.liberapay.co
 That's it! The app should now be running. 
 
 ## Credits
+Lyrion is based on the original Lotus music player by [dn0ne](https://github.com/dn0ne). Thank you for creating and sharing the project that this app builds on.
+
 Some UI elements are inspired by [Vanilla](https://github.com/vanilla-music/vanilla)
 
 Lyrics UI is inspired by [Beautiful Lyrics](https://github.com/surfbryce/beautiful-lyrics)
