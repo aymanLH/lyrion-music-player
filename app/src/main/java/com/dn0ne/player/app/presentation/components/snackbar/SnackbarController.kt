@@ -11,4 +11,10 @@ object SnackbarController {
     suspend fun sendEvent(event: SnackbarEvent) {
         _events.send(event)
     }
+
+    /**
+     * Non-suspending variant for background work. Returns false when no UI is collecting,
+     * in which case the event is dropped instead of being delivered long after the fact.
+     */
+    fun trySendEvent(event: SnackbarEvent): Boolean = _events.trySend(event).isSuccess
 }

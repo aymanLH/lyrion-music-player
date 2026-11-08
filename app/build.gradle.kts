@@ -4,11 +4,14 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlinx.serialization)
     alias(libs.plugins.realm)
+    alias(libs.plugins.ksp)
 }
 
-val splitApks = !project.hasProperty("noSplits")
-val abiFilterList = (properties["ABI_FILTERS"] as? String)?.split(';').orEmpty()
-val abiCodes = mapOf("armeabi-v7a" to 1, "arm64-v8a" to 2, "x86" to 3, "x86_64" to 4)
+val abiFilterList = (properties["ABI_FILTERS"] as? String)
+    ?.split(';')
+    ?.map { it.trim() }
+    ?.filter { it.isNotEmpty() }
+    ?: listOf("armeabi-v7a")
 
 android {
     namespace = "com.dn0ne.player"
@@ -18,49 +21,19 @@ android {
         applicationId = "com.dn0ne.lotus"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1_002_000
-        versionName = "1.2.0"
+        versionCode = 1_003_000
+        versionName = "1.3.0"
 
-        if (splitApks) {
-            splits {
-                abi {
-                    isEnable = true
-                    reset()
-                    include("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
-                    isUniversalApk = true
-                }
-            }
-        } else {
-            ndk {
-                abiFilters.addAll(abiFilterList)
-            }
+        ndk {
+            abiFilters.clear()
+            abiFilters.addAll(abiFilterList)
         }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
-    androidComponents {
-        onVariants { variant ->
-            variant.outputs.forEach { output ->
-                val name =
-                    if (splitApks) {
-                        output.filters
-                            .find {
-                                it.filterType ==
-                                        com.android.build.api.variant.FilterConfiguration.FilterType.ABI
-                            }
-                            ?.identifier
-                    } else {
-                        abiFilterList.firstOrNull()
-                    }
-
-                val baseAbiCode = abiCodes[name]
-
-                if (baseAbiCode != null) {
-                    output.versionCode.set(baseAbiCode + (output.versionCode.getOrElse(0)))
-                }
-            }
-        }
+    packaging {
+        jniLibs.useLegacyPackaging = true
     }
 
     buildTypes {
@@ -96,6 +69,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     dependenciesInfo {
@@ -129,12 +103,14 @@ dependencies {
     implementation(libs.androidx.core.splashscreen)
     implementation(libs.androidx.material.icons)
     implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.exoplayer.hls)
     implementation(libs.androidx.media3.session)
     implementation(platform(libs.koin.bom))
     implementation(libs.koin.androidx.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.coil)
+    implementation(libs.coil.network.okhttp)
     implementation(libs.kmpalette.core)
     implementation(libs.materialkolor)
     implementation(libs.jaudiotagger)
@@ -145,4 +121,9 @@ dependencies {
     implementation(libs.realm.library.base)
     implementation(libs.reorderable)
     implementation(libs.scrollbars)
+    implementation(libs.youtubedl.android.library)
+    implementation(libs.youtubedl.android.ffmpeg)
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
 }

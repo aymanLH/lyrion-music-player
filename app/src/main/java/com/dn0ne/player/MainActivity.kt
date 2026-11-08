@@ -39,6 +39,7 @@ import coil3.request.transitionFactory
 import coil3.transition.CrossfadeTransition
 import com.dn0ne.player.app.data.MetadataWriter
 import com.dn0ne.player.app.data.TempAudioCache
+import com.dn0ne.player.app.data.repository.DownloadRepository
 import com.dn0ne.player.app.domain.metadata.Metadata
 import com.dn0ne.player.app.domain.result.DataError
 import com.dn0ne.player.app.domain.result.Result
@@ -58,6 +59,8 @@ import com.dn0ne.player.setup.presentation.SetupViewModel
 import com.dn0ne.player.ui.theme.MusicPlayerTheme
 import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import org.koin.android.ext.android.get
@@ -100,6 +103,12 @@ class MainActivity : ComponentActivity() {
                     goToAppSettings()
                 }
             }
+
+        val requestNotificationPermissionLauncher =
+            registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+        val downloadRepository = get<DownloadRepository>()
+        var notificationPermissionRequested = false
 
         var isWritePermissionGranted = checkWritePermission()
         val requestWritePermissionLauncher =
@@ -191,6 +200,27 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MusicPlayerTheme {
+                // Ask for notification permission the first time something is queued.
+                LaunchedEffect(Unit) {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                        checkNotificationPermission()
+                    ) {
+                        return@LaunchedEffect
+                    }
+
+                    downloadRepository.tasks
+                        .map { it.isNotEmpty() }
+                        .distinctUntilChanged()
+                        .collect { hasTasks ->
+                            if (hasTasks && !notificationPermissionRequested) {
+                                notificationPermissionRequested = true
+                                requestNotificationPermissionLauncher.launch(
+                                    Manifest.permission.POST_NOTIFICATIONS
+                                )
+                            }
+                        }
+                }
+
                 ScaffoldWithSnackbarEvents(modifier = Modifier.fillMaxSize()) {
 
                     val navController = rememberNavController()
@@ -457,6 +487,11 @@ class MainActivity : ComponentActivity() {
 
     private fun checkWritePermission(): Boolean =
         checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+
+    private fun checkNotificationPermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
 
     private fun goToAppSettings() {
         val intent = Intent(

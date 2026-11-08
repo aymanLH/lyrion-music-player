@@ -14,6 +14,9 @@ import com.dn0ne.player.EqualizerController
 import com.dn0ne.player.R
 import com.dn0ne.player.app.data.LyricsReader
 import com.dn0ne.player.app.data.SavedPlayerState
+import com.dn0ne.player.app.data.download.YtDlpUpdater
+import com.dn0ne.player.app.data.preview.PlaybackLink
+import com.dn0ne.player.app.data.preview.PreviewPlayer
 import com.dn0ne.player.app.data.remote.lyrics.LyricsProvider
 import com.dn0ne.player.app.data.remote.metadata.MetadataProvider
 import com.dn0ne.player.app.data.repository.LyricsRepository
@@ -72,15 +75,23 @@ class PlayerViewModel(
     private val unsupportedArtworkEditFormats: List<String>,
     val settings: Settings,
     private val musicScanner: MusicScanner,
-    private val equalizerController: EqualizerController
+    private val equalizerController: EqualizerController,
+    private val ytDlpUpdater: YtDlpUpdater,
+    private val playbackLink: PlaybackLink,
+    private val previewPlayer: PreviewPlayer
 ) : ViewModel() {
     var player: Player? = null
+        set(value) {
+            field = value
+            playbackLink.mainPlayer = value
+        }
 
     private val _settingsSheetState = MutableStateFlow(
         SettingsSheetState(
             settings = settings,
             musicScanner = musicScanner,
-            equalizerController = equalizerController
+            equalizerController = equalizerController,
+            ytDlpUpdater = ytDlpUpdater
         )
     )
     val settingsSheetState = _settingsSheetState.stateIn(
@@ -123,6 +134,13 @@ class PlayerViewModel(
         started = SharingStarted.WhileSubscribed(5000L),
         initialValue = emptyList()
     )
+
+    suspend fun refreshTracksForHistory(): List<Track> {
+        val tracks = withContext(Dispatchers.IO) { trackRepository.getTracks() }
+        val sortedTracks = tracks.sortedBy(_trackSort.value, _trackSortOrder.value)
+        _trackList.update { sortedTracks }
+        return sortedTracks
+    }
 
     val albumPlaylists = _trackList.map {
         it.groupBy { it.album }.entries.map {
@@ -320,6 +338,11 @@ class PlayerViewModel(
                             it.copy(
                                 isPlaying = isPlaying
                             )
+                        }
+
+                        // The preview and the main player must never play together.
+                        if (isPlaying) {
+                            previewPlayer.pause()
                         }
 
                         positionUpdateJob?.cancel()

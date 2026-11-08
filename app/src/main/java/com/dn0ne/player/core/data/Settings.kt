@@ -7,6 +7,9 @@ import androidx.compose.ui.unit.sp
 import com.dn0ne.player.app.domain.sort.PlaylistSort
 import com.dn0ne.player.app.domain.sort.SortOrder
 import com.dn0ne.player.app.domain.sort.TrackSort
+import com.dn0ne.player.app.domain.download.DownloadAudioFormat
+import com.dn0ne.player.app.domain.download.DownloadAudioQuality
+import com.dn0ne.player.app.domain.download.YtDlpUpdateChannel
 import com.dn0ne.player.app.presentation.components.settings.Theme
 import com.dn0ne.player.app.presentation.components.topbar.Tab
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,6 +29,8 @@ class Settings(context: Context) {
     private val albumArtColorIntensityKey = "album-art-color-intensity"
     private val paletteStyleKey = "palette-style"
     private val amoledDarkThemeKey = "amoled-dark-theme"
+    private val albumArtThemeSeedKey = "album-art-theme-seed"
+    private val albumArtThemeTrackIdKey = "album-art-theme-track-id"
 
     private val lyricsFontSizeKey = "lyrics-font-size"
     private val lyricsFontWeightKey = "lyrics-font-weight"
@@ -58,6 +63,18 @@ class Settings(context: Context) {
     private val floatingMiniPlayerHeightKey = "floating-mini-player-height"
 
     private val gridPlaylistsKey = "grid-playlists"
+
+    private val ytDlpAutoUpdateKey = "yt-dlp-auto-update"
+    private val ytDlpUpdateChannelKey = "yt-dlp-update-channel"
+    private val ytDlpUpdateIntervalDaysKey = "yt-dlp-update-interval-days"
+    private val ytDlpVersionKey = "yt-dlp-version"
+    private val ytDlpLastUpdateKey = "yt-dlp-last-update"
+
+    private val downloadFormatKey = "download-format"
+    private val downloadQualityKey = "download-quality"
+    private val embedMetadataKey = "embed-metadata"
+    private val embedThumbnailKey = "embed-thumbnail"
+    private val notificationsEnabledKey = "notifications-enabled"
 
     var handleAudioFocus: Boolean
         get() = sharedPreferences.getBoolean(handleAudioFocusKey, true)
@@ -116,6 +133,28 @@ class Settings(context: Context) {
             putBoolean(useAlbumArtColorKey, value)
             apply()
         }
+    }
+
+    private val _albumArtThemeSeed = MutableStateFlow(
+        sharedPreferences.getInt(albumArtThemeSeedKey, 0).takeIf {
+            sharedPreferences.contains(albumArtThemeSeedKey)
+        }
+    )
+    val albumArtThemeSeed = _albumArtThemeSeed.asStateFlow()
+
+    private val _albumArtThemeTrackId = MutableStateFlow(
+        sharedPreferences.getString(albumArtThemeTrackIdKey, null)
+    )
+    val albumArtThemeTrackId = _albumArtThemeTrackId.asStateFlow()
+
+    fun updateAlbumArtTheme(seedColor: Int, trackId: String) {
+        if (_albumArtThemeSeed.value == seedColor && _albumArtThemeTrackId.value == trackId) return
+        _albumArtThemeSeed.value = seedColor
+        _albumArtThemeTrackId.value = trackId
+        sharedPreferences.edit()
+            .putInt(albumArtThemeSeedKey, seedColor)
+            .putString(albumArtThemeTrackIdKey, trackId)
+            .apply()
     }
 
     private val _albumArtColorIntensity = MutableStateFlow(
@@ -425,6 +464,126 @@ class Settings(context: Context) {
         _gridPlaylist.update { value }
         with(sharedPreferences.edit()) {
             putBoolean(gridPlaylistsKey, value)
+            apply()
+        }
+    }
+
+    private val _ytDlpAutoUpdate = MutableStateFlow(
+        sharedPreferences.getBoolean(ytDlpAutoUpdateKey, true)
+    )
+    val ytDlpAutoUpdate = _ytDlpAutoUpdate.asStateFlow()
+    fun updateYtDlpAutoUpdate(value: Boolean) {
+        _ytDlpAutoUpdate.update { value }
+        with(sharedPreferences.edit()) {
+            putBoolean(ytDlpAutoUpdateKey, value)
+            apply()
+        }
+    }
+
+    private val _ytDlpUpdateChannel = MutableStateFlow(
+        YtDlpUpdateChannel.entries.getOrElse(
+            sharedPreferences.getInt(ytDlpUpdateChannelKey, YtDlpUpdateChannel.NIGHTLY.ordinal)
+        ) { YtDlpUpdateChannel.NIGHTLY }
+    )
+    val ytDlpUpdateChannel = _ytDlpUpdateChannel.asStateFlow()
+    fun updateYtDlpUpdateChannel(value: YtDlpUpdateChannel) {
+        _ytDlpUpdateChannel.update { value }
+        with(sharedPreferences.edit()) {
+            putInt(ytDlpUpdateChannelKey, value.ordinal)
+            apply()
+        }
+    }
+
+    private val _ytDlpUpdateIntervalDays = MutableStateFlow(
+        sharedPreferences.getInt(ytDlpUpdateIntervalDaysKey, 7)
+    )
+    val ytDlpUpdateIntervalDays = _ytDlpUpdateIntervalDays.asStateFlow()
+    fun updateYtDlpUpdateIntervalDays(value: Int) {
+        _ytDlpUpdateIntervalDays.update { value }
+        with(sharedPreferences.edit()) {
+            putInt(ytDlpUpdateIntervalDaysKey, value)
+            apply()
+        }
+    }
+
+    var ytDlpVersion: String
+        get() = sharedPreferences.getString(ytDlpVersionKey, "").orEmpty()
+        set(value) {
+            with(sharedPreferences.edit()) {
+                putString(ytDlpVersionKey, value)
+                apply()
+            }
+        }
+
+    var ytDlpLastUpdate: Long
+        get() = sharedPreferences.getLong(ytDlpLastUpdateKey, 0L)
+        set(value) {
+            with(sharedPreferences.edit()) {
+                putLong(ytDlpLastUpdateKey, value)
+                apply()
+            }
+        }
+
+    private val _downloadFormat = MutableStateFlow(
+        DownloadAudioFormat.entries.getOrElse(
+            sharedPreferences.getInt(downloadFormatKey, DownloadAudioFormat.OPUS.ordinal)
+        ) { DownloadAudioFormat.OPUS }
+    )
+    val downloadFormat = _downloadFormat.asStateFlow()
+    fun updateDownloadFormat(value: DownloadAudioFormat) {
+        _downloadFormat.update { value }
+        with(sharedPreferences.edit()) {
+            putInt(downloadFormatKey, value.ordinal)
+            apply()
+        }
+    }
+
+    private val _downloadQuality = MutableStateFlow(
+        DownloadAudioQuality.entries.getOrElse(
+            sharedPreferences.getInt(downloadQualityKey, DownloadAudioQuality.HIGH.ordinal)
+        ) { DownloadAudioQuality.HIGH }
+    )
+    val downloadQuality = _downloadQuality.asStateFlow()
+    fun updateDownloadQuality(value: DownloadAudioQuality) {
+        _downloadQuality.update { value }
+        with(sharedPreferences.edit()) {
+            putInt(downloadQualityKey, value.ordinal)
+            apply()
+        }
+    }
+
+    private val _embedMetadata = MutableStateFlow(
+        sharedPreferences.getBoolean(embedMetadataKey, true)
+    )
+    val embedMetadata = _embedMetadata.asStateFlow()
+    fun updateEmbedMetadata(value: Boolean) {
+        _embedMetadata.update { value }
+        with(sharedPreferences.edit()) {
+            putBoolean(embedMetadataKey, value)
+            apply()
+        }
+    }
+
+    private val _embedThumbnail = MutableStateFlow(
+        sharedPreferences.getBoolean(embedThumbnailKey, true)
+    )
+    val embedThumbnail = _embedThumbnail.asStateFlow()
+    fun updateEmbedThumbnail(value: Boolean) {
+        _embedThumbnail.update { value }
+        with(sharedPreferences.edit()) {
+            putBoolean(embedThumbnailKey, value)
+            apply()
+        }
+    }
+
+    private val _notificationsEnabled = MutableStateFlow(
+        sharedPreferences.getBoolean(notificationsEnabledKey, true)
+    )
+    val notificationsEnabled = _notificationsEnabled.asStateFlow()
+    fun updateNotificationsEnabled(value: Boolean) {
+        _notificationsEnabled.update { value }
+        with(sharedPreferences.edit()) {
+            putBoolean(notificationsEnabledKey, value)
             apply()
         }
     }

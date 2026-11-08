@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.ArrowBackIosNew
 import androidx.compose.material.icons.rounded.ColorLens
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.MusicNote
@@ -183,6 +184,14 @@ fun SettingsSheet(
                                     }
                                 ),
                                 SettingsItem(
+                                    title = context.resources.getString(R.string.downloads),
+                                    supportingText = context.resources.getString(R.string.downloads_supporting_text),
+                                    icon = Icons.Rounded.Download,
+                                    onClick = {
+                                        navController.navigate(SettingsRoutes.Downloads)
+                                    }
+                                ),
+                                SettingsItem(
                                     title = context.resources.getString(R.string.theme),
                                     supportingText = context.resources.getString(R.string.theme_supporting_text),
                                     icon = Icons.Rounded.ColorLens,
@@ -266,6 +275,17 @@ fun SettingsSheet(
                     )
                 }
 
+                composable<SettingsRoutes.Downloads> {
+                    DownloadSettings(
+                        settings = state.settings,
+                        ytDlpUpdater = state.ytDlpUpdater,
+                        onBackClick = {
+                            navController.navigateUp()
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
                 composable<SettingsRoutes.Theme> {
                     ThemeSettings(
                         settings = state.settings,
@@ -319,6 +339,9 @@ sealed interface SettingsRoutes {
 
     @Serializable
     data object Playlists : SettingsRoutes
+
+    @Serializable
+    data object Downloads : SettingsRoutes
 
     @Serializable
     data object Theme : SettingsRoutes

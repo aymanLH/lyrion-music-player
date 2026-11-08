@@ -24,6 +24,10 @@
 
 -keep class org.jaudiotagger.** { *; }
 
+# youtubedl-android loads python/ffmpeg and reflects into these classes.
+-keep class com.yausername.** { *; }
+-dontwarn com.yausername.**
+
 -dontwarn java.awt.Graphics2D
 -dontwarn java.awt.Image
 -dontwarn java.awt.geom.AffineTransform

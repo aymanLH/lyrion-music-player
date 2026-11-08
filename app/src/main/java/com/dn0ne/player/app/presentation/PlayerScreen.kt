@@ -2,6 +2,8 @@ package com.dn0ne.player.app.presentation
 
 import android.content.ClipboardManager
 import android.content.Context
+import android.net.Uri
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -38,6 +40,7 @@ import androidx.compose.material.icons.automirrored.rounded.ViewList
 import androidx.compose.material.icons.rounded.AddToQueue
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.FilterList
 import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
@@ -68,6 +71,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -76,6 +80,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -83,6 +88,7 @@ import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.util.fastFirstOrNull
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.dn0ne.player.R
 import com.dn0ne.player.app.domain.sort.PlaylistSort
@@ -113,6 +119,10 @@ import com.dn0ne.player.app.presentation.components.topbar.TopBarContent
 import com.dn0ne.player.app.presentation.components.trackList
 import com.dn0ne.player.app.presentation.components.trackinfo.SearchField
 import com.dn0ne.player.app.presentation.components.trackinfo.TrackInfoSheet
+import com.dn0ne.player.app.presentation.downloads.DownloadSearchScreen
+import com.dn0ne.player.app.presentation.downloads.DownloadQueueScreen
+import com.dn0ne.player.app.presentation.downloads.DownloadHistoryScreen
+import com.dn0ne.player.app.presentation.downloads.DownloadsViewModel
 import com.kmpalette.color
 import com.kmpalette.rememberDominantColorState
 import com.materialkolor.DynamicMaterialTheme
@@ -121,7 +131,10 @@ import com.materialkolor.ktx.toColor
 import com.materialkolor.ktx.toHct
 import com.materialkolor.rememberDynamicColorScheme
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.Serializable
+import org.koin.androidx.compose.koinViewModel
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -133,11 +146,18 @@ fun PlayerScreen(
     onPlaylistPick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val playbackState by viewModel.playbackState.collectAsState()
+    val currentTrack = playbackState.currentTrack
+    val currentTrackId = currentTrack?.uri?.toString()
+    val persistedThemeSeed by viewModel.settings.albumArtThemeSeed.collectAsState()
     val dominantColorState = rememberDominantColorState()
     var coverArtBitmap by remember {
         mutableStateOf<ImageBitmap?>(null)
     }
-    val colorToApply by remember(coverArtBitmap) {
+    var coverArtBitmapTrackId by remember {
+        mutableStateOf<String?>(null)
+    }
+    val colorToApply by remember(coverArtBitmap, persistedThemeSeed) {
         derivedStateOf {
             if (coverArtBitmap != null) {
                 dominantColorState.result
@@ -153,13 +173,45 @@ fun PlayerScreen(
                                     it.population.toFloat() / firstSwatchPopulation >= .1f
                         }
                         moreChromatic?.color ?: firstSwatch.color
-                    } ?: dominantColorState.color
-            } else dominantColorState.color
+                    } ?: persistedThemeSeed?.let(::Color) ?: dominantColorState.color
+            } else persistedThemeSeed?.let(::Color) ?: dominantColorState.color
         }
     }
 
-    LaunchedEffect(coverArtBitmap) {
-        coverArtBitmap?.let { dominantColorState.updateFrom(it) } ?: dominantColorState.reset()
+    LaunchedEffect(currentTrackId) {
+        if (currentTrackId == null) {
+            coverArtBitmap = null
+            coverArtBitmapTrackId = null
+            dominantColorState.reset()
+        }
+    }
+
+    LaunchedEffect(coverArtBitmap, coverArtBitmapTrackId) {
+        val bitmap = coverArtBitmap
+        val trackId = coverArtBitmapTrackId
+        if (bitmap == null || trackId == null) return@LaunchedEffect
+
+        // Keep the existing bitmap-driven extraction. The currently displayed palette remains
+        // in place until KMPalette finishes extracting the next cover.
+        dominantColorState.updateFrom(bitmap)
+        val result = snapshotFlow { dominantColorState.result }.filterNotNull().first()
+        Log.d("YT_DEBUG", "Theme palette extracted trackId=$trackId success=${result.paletteOrNull != null}")
+        val swatches = result.paletteOrNull?.swatches?.sortedByDescending { it.population }
+        val extractedSeed = swatches?.let { paletteSwatches ->
+            val firstSwatch = paletteSwatches.firstOrNull()
+            if (firstSwatch == null) null else {
+                val firstSwatchColorHct = firstSwatch.color.toHct()
+                val firstSwatchPopulation = firstSwatch.population
+                val moreChromatic = paletteSwatches.fastFirstOrNull {
+                    it.color.toHct().chroma - firstSwatchColorHct.chroma >= 30 &&
+                            it.population.toFloat() / firstSwatchPopulation >= .1f
+                }
+                moreChromatic?.color ?: firstSwatch.color
+            }
+        }
+        if (result.paletteOrNull != null && extractedSeed != null) {
+            viewModel.settings.updateAlbumArtTheme(extractedSeed.toArgb(), trackId)
+        }
     }
 
     val appearance by viewModel.settings.appearance.collectAsState()
@@ -254,20 +306,6 @@ fun PlayerScreen(
                     .background(color = MaterialTheme.colorScheme.background)
             ) {
                 val context = LocalContext.current
-                val playbackState by viewModel.playbackState.collectAsState()
-                val currentTrack by remember {
-                    derivedStateOf {
-                        playbackState.currentTrack
-                    }
-                }
-
-                LaunchedEffect(currentTrack) {
-                    if (currentTrack == null) {
-                        coverArtBitmap = null
-                        dominantColorState.reset()
-                    }
-                }
-
                 val trackSort by viewModel.trackSort.collectAsState()
                 val trackSortOrder by viewModel.trackSortOrder.collectAsState()
                 val playlistSort by viewModel.playlistSort.collectAsState()
@@ -287,6 +325,14 @@ fun PlayerScreen(
                 }
 
                 val navController = rememberNavController()
+                val currentBackStackEntry by navController.currentBackStackEntryAsState()
+                val downloadRouteNames = setOf(
+                    PlayerRoutes.DownloadSearch::class.simpleName,
+                    PlayerRoutes.DownloadQueue::class.simpleName,
+                    PlayerRoutes.DownloadHistory::class.simpleName,
+                )
+                val isDownloadRoute = currentBackStackEntry?.destination?.route
+                    ?.substringBefore('?')?.substringAfterLast('.') in downloadRouteNames
 
                 var showScrollToTopButton by remember {
                     mutableStateOf(false)
@@ -525,6 +571,7 @@ fun PlayerScreen(
                             onSettingsClick = {
                                 viewModel.onEvent(PlayerScreenEvent.OnSettingsClick)
                             },
+                            onDownloadsClick = { navController.navigate(PlayerRoutes.DownloadSearch) },
                             replaceSearchWithFilter = replaceSearchWithFilter,
                             gridPlaylists = gridPlaylists,
                             onGridPlaylistsClick = {
@@ -532,6 +579,64 @@ fun PlayerScreen(
                                     !gridPlaylists
                                 )
                             }
+                        )
+                    }
+
+                    composable<PlayerRoutes.DownloadSearch> {
+                        val downloadsViewModel: DownloadsViewModel = koinViewModel()
+                        DownloadSearchScreen(
+                            viewModel = downloadsViewModel,
+                            onBack = { navController.popBackStack() },
+                            onOpenQueue = { navController.navigate(PlayerRoutes.DownloadQueue) },
+                            onOpenHistory = { navController.navigate(PlayerRoutes.DownloadHistory) },
+                        )
+                    }
+
+                    composable<PlayerRoutes.DownloadQueue> {
+                        val downloadsViewModel: DownloadsViewModel = koinViewModel()
+                        DownloadQueueScreen(
+                            viewModel = downloadsViewModel,
+                            onBack = { navController.popBackStack() },
+                        )
+                    }
+
+                    composable<PlayerRoutes.DownloadHistory> {
+                        val downloadsViewModel: DownloadsViewModel = koinViewModel()
+                        DownloadHistoryScreen(
+                            viewModel = downloadsViewModel,
+                            onBack = { navController.popBackStack() },
+                            onOpenTrack = { entry ->
+                                val storedUri = entry.mediaStoreUri?.let {
+                                    runCatching { Uri.parse(it) }.getOrNull()
+                                }
+                                val storedId = storedUri?.lastPathSegment
+                                fun findMatch(tracks: List<Track>) = tracks.firstOrNull { track ->
+                                    if (storedUri?.scheme == "file") track.data == storedUri.path
+                                    else storedId != null && track.uri.lastPathSegment == storedId
+                                }
+                                var availableTracks = viewModel.trackList.value
+                                var track = findMatch(availableTracks)
+                                if (track == null) {
+                                    availableTracks = viewModel.refreshTracksForHistory()
+                                    track = findMatch(availableTracks)
+                                }
+                                Log.d(
+                                    "YT_DEBUG",
+                                    "History lookup storedUri=${entry.mediaStoreUri} storedId=$storedId matchedUri=${track?.uri} matchedId=${track?.uri?.lastPathSegment}",
+                                )
+                                if (track != null) {
+                                    viewModel.onEvent(
+                                        PlayerScreenEvent.OnTrackClick(
+                                            track,
+                                            Playlist(name = "Downloads", trackList = availableTracks)
+                                        )
+                                    )
+                                    navController.popBackStack(PlayerRoutes.Main, false)
+                                    true
+                                } else {
+                                    false
+                                }
+                            },
                         )
                     }
 
@@ -809,7 +914,7 @@ fun PlayerScreen(
                         ScrollToTopAndLocateButtons(
                             showScrollToTopButton = showScrollToTopButton,
                             onScrollToTopClick = onScrollToTopClick,
-                            showLocateButton = showLocateButton,
+                            showLocateButton = showLocateButton && !isDownloadRoute,
                             onLocateClick = onLocateClick,
                             showCreatePlaylistButton = showCreatePlaylistButton,
                             onCreatePlaylistClick = {
@@ -857,7 +962,9 @@ fun PlayerScreen(
                                     viewModel.onEvent(PlayerScreenEvent.OnPlaybackModeClick)
                                 },
                                 onCoverArtLoaded = {
+                                    Log.d("YT_DEBUG", "Theme cover callback trackId=$currentTrackId bitmap=${it != null}")
                                     coverArtBitmap = it
+                                    coverArtBitmapTrackId = currentTrackId
                                 },
                                 onPlayNextClick = {
                                     viewModel.onEvent(PlayerScreenEvent.OnPlayNextClick(it))
@@ -1067,7 +1174,8 @@ fun MainPlayerScreen(
     replaceSearchWithFilter: Boolean,
     gridPlaylists: Boolean,
     onGridPlaylistsClick: () -> Unit,
-    onSettingsClick: () -> Unit
+    onSettingsClick: () -> Unit,
+    onDownloadsClick: () -> Unit,
 ) {
     val context = LocalContext.current
 
@@ -1206,6 +1314,13 @@ fun MainPlayerScreen(
                                         contentDescription = context.resources.getString(
                                             R.string.track_search
                                         )
+                                    )
+                                }
+
+                                IconButton(onClick = onDownloadsClick) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Download,
+                                        contentDescription = "Downloads"
                                     )
                                 }
                             }
@@ -1860,6 +1975,15 @@ private sealed interface PlayerRoutes {
 
     @Serializable
     data object MutablePlaylist : PlayerRoutes
+
+    @Serializable
+    data object DownloadSearch : PlayerRoutes
+
+    @Serializable
+    data object DownloadQueue : PlayerRoutes
+
+    @Serializable
+    data object DownloadHistory : PlayerRoutes
 }
 
 /**

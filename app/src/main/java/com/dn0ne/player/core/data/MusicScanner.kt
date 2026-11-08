@@ -18,7 +18,7 @@ class MusicScanner(
     private val context: Context,
     private val settings: Settings
 ) {
-    private val allowedExtensions = setOf("mp3", "wav", "aac", "flac", "ogg", "m4a")
+    private val allowedExtensions = setOf("mp3", "wav", "aac", "flac", "ogg", "m4a", "opus")
 
     suspend fun refreshMedia(showMessages: Boolean = true, onComplete: () -> Unit = {}) {
         withContext(Dispatchers.IO) {
@@ -119,7 +119,11 @@ class MusicScanner(
         }
     }
 
-    suspend fun scanFolder(path: String, onComplete: () -> Unit = {}) {
+    suspend fun scanFolder(
+        path: String,
+        showMessages: Boolean = true,
+        onComplete: () -> Unit = {}
+    ) {
         withContext(Dispatchers.IO) {
             try {
                 MediaScannerConnection.scanFile(
@@ -129,12 +133,15 @@ class MusicScanner(
                     null
                 )
 
-                SnackbarController.sendEvent(
-                    event = SnackbarEvent(
-                        message = R.string.scanned_successfully
+                if (showMessages) {
+                    SnackbarController.sendEvent(
+                        event = SnackbarEvent(
+                            message = R.string.scanned_successfully
+                        )
                     )
-                )
+                }
             } catch (e: Exception) {
+                if (!showMessages) return@withContext
                 SnackbarController.sendEvent(
                     SnackbarEvent(
                         message = R.string.failed_to_scan,
@@ -154,6 +161,7 @@ class MusicScanner(
                     )
                 )
             } catch (e: java.lang.Exception) {
+                if (!showMessages) return@withContext
                 SnackbarController.sendEvent(
                     SnackbarEvent(
                         message = R.string.failed_to_scan,

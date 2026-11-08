@@ -358,4 +358,60 @@
 
     <string name="copy_error">Copy error</string>
     <string name="select_all">Select all</string>
+
+    <!-- Downloads / yt-dlp -->
+    <string name="downloads">Downloads</string>
+    <string name="downloads_queue_title">Queue</string>
+    <string name="download_history_title">History</string>
+    <string name="downloads_supporting_text">YouTube search, downloads and yt-dlp</string>
+    <string name="update_yt_dlp">Update yt-dlp</string>
+    <string name="yt_dlp_version">Installed version: %1$s</string>
+    <string name="yt_dlp_version_unknown">Installed version unknown</string>
+    <string name="yt_dlp_updating">Updating yt-dlp…</string>
+    <string name="yt_dlp_update_updated">Updated to %1$s</string>
+    <string name="yt_dlp_update_already_up_to_date">Already up to date (%1$s)</string>
+    <string name="yt_dlp_update_failed">Update failed: %1$s</string>
+    <string name="yt_dlp_update_skipped">Update skipped</string>
+    <string name="auto_update_yt_dlp">Auto-update yt-dlp</string>
+    <string name="auto_update_yt_dlp_explain">Update when the app starts and the download queue is idle</string>
+    <string name="update_channel">Update channel</string>
+    <string name="update_channel_stable">Stable</string>
+    <string name="update_channel_nightly">Nightly</string>
+
+    <!-- Download format/quality -->
+    <string name="download_format">Audio format</string>
+    <string name="download_format_original">Original</string>
+    <string name="download_format_opus">Opus</string>
+    <string name="download_format_m4a">M4A</string>
+    <string name="download_format_mp3">MP3</string>
+    <string name="download_format_explain">Opus is the default and is not re-encoded. M4A and MP3 are converted with ffmpeg.</string>
+    <string name="download_quality">Audio quality</string>
+    <string name="download_quality_high">High (≈192 kbps)</string>
+    <string name="download_quality_medium">Medium (≈128 kbps)</string>
+    <string name="download_quality_low">Low (≈64 kbps)</string>
+    <string name="embed_metadata">Embed metadata</string>
+    <string name="embed_metadata_explain">Write title, artist, album and date tags</string>
+    <string name="embed_thumbnail">Embed thumbnail</string>
+    <string name="embed_thumbnail_explain">Use the video thumbnail as track artwork</string>
+    <string name="download_notifications">Download notifications</string>
+    <string name="download_notifications_explain">Show progress and finish notifications</string>
+
+    <!-- Download notification channels and actions -->
+    <string name="download_channel_progress">Download progress</string>
+    <string name="download_channel_progress_explain">Progress of running downloads</string>
+    <string name="download_channel_status">Download status</string>
+    <string name="download_channel_status_explain">Finished and failed downloads</string>
+    <string name="download_notification_title">Downloading</string>
+    <string name="download_notification_complete">Saved to your library</string>
+    <string name="download_notification_downloaded">Downloaded</string>
+    <string name="download_notification_failed">Download failed</string>
+    <string name="download_notification_service_title">Downloading %1$d of %2$d</string>
+    <string name="download_unknown_title">Audio download</string>
+    <string name="download_error_generic">Download failed</string>
+    <string name="notification_cancel">Cancel</string>
+    <string name="notification_copy_report">Copy report</string>
+
+    <!-- Download errors -->
+    <string name="download_failed">Download failed</string>
+    <string name="download_error_too_many_requests">Too many requests, try again in a minute</string>
 </resources>

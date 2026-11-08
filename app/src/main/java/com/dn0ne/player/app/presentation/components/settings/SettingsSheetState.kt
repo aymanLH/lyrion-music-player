@@ -1,6 +1,7 @@
 package com.dn0ne.player.app.presentation.components.settings
 
 import com.dn0ne.player.EqualizerController
+import com.dn0ne.player.app.data.download.YtDlpUpdater
 import com.dn0ne.player.core.data.MusicScanner
 import com.dn0ne.player.core.data.Settings
 
@@ -9,6 +10,7 @@ data class SettingsSheetState(
     val musicScanner: MusicScanner,
     val isShown: Boolean = false,
     val equalizerController: EqualizerController,
+    val ytDlpUpdater: YtDlpUpdater,
     val foldersWithAudio: Set<String> = emptySet(),
     val lyricsFetchProgress: LyricsFetchProgress = LyricsFetchProgress()
 )
