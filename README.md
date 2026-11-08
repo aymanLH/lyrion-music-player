@@ -40,8 +40,6 @@ Get the latest Lyrion builds from [this repository's GitHub Releases](https://gi
 
 Version 1.3.0 is the current release.
 
-## Support
-If you enjoy using Lyrion, consider [buying me a coffee](https://en.liberapay.com/dn0ne/donate)!
 
 ## Build
 1. **Get the Source Code**  
