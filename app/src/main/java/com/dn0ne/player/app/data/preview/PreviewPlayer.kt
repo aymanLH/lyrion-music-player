@@ -144,7 +144,7 @@ class PreviewPlayer(
         resolveJob = scope.launch {
             youtubeProvider.resolveAudioStream(item.id)
                 .onSuccess { stream -> playResolvedStream(item, stream.url) }
-                .onFailure { throwable -> fail(throwable.message ?: "Could not resolve audio stream") }
+                .onFailure { throwable -> fail(throwable.message ?: throwable::class.java.simpleName) }
         }
     }
 
@@ -164,7 +164,7 @@ class PreviewPlayer(
             exoPlayer.prepare()
             exoPlayer.playWhenReady = true
         } catch (exception: RuntimeException) {
-            fail(exception.message ?: "This audio stream could not be played")
+            fail(exception.message ?: exception::class.java.simpleName)
         }
     }
 
@@ -188,13 +188,13 @@ class PreviewPlayer(
                 youtubeProvider.resolveAudioStream(item.id, forceRefresh = true)
                     .onSuccess { stream -> playResolvedStream(item, stream.url) }
                     .onFailure { throwable ->
-                        fail(throwable.message ?: "Playback failed")
+                        fail(throwable.message ?: throwable::class.java.simpleName)
                     }
             }
             return
         }
 
-        fail(error.message ?: "Playback failed")
+        fail(error.message ?: error::class.java.simpleName)
     }
 
     private fun fail(message: String) {

@@ -108,6 +108,11 @@ class MainActivity : ComponentActivity() {
             registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
         val downloadRepository = get<DownloadRepository>()
+        lifecycleScope.launch {
+            downloadRepository.resumeInterruptedTasks {
+                DownloadService.start(this@MainActivity)
+            }
+        }
         var notificationPermissionRequested = false
 
         var isWritePermissionGranted = checkWritePermission()

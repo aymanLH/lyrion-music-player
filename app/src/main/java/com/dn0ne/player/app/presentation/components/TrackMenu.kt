@@ -13,6 +13,7 @@ import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.AddToQueue
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlaylistRemove
@@ -45,7 +46,8 @@ fun TrackMenu(
     onViewTrackInfoClick: () -> Unit,
     onGoToAlbumClick: () -> Unit,
     onGoToArtistClick: () -> Unit,
-    onRemoveFromPlaylistClick: (() -> Unit)? = null
+    onRemoveFromPlaylistClick: (() -> Unit)? = null,
+    onDeleteTrackClick: (() -> Unit)? = null,
 ) {
     DropdownMenu(
         expanded = isExpanded,
@@ -116,6 +118,19 @@ fun TrackMenu(
                         imageVector = Icons.Rounded.PlaylistRemove,
                         contentDescription = null
                     )
+                }
+            )
+        }
+
+        onDeleteTrackClick?.let {
+            DropdownMenuItem(
+                text = { Text(context.resources.getString(R.string.delete_song)) },
+                onClick = {
+                    onDeleteTrackClick()
+                    onDismissRequest()
+                },
+                leadingIcon = {
+                    Icon(imageVector = Icons.Rounded.Delete, contentDescription = null)
                 }
             )
         }
@@ -203,6 +218,7 @@ fun TrackMenuButton(
     onGoToAlbumClick: () -> Unit,
     onGoToArtistClick: () -> Unit,
     onRemoveFromPlaylistClick: (() -> Unit)? = null,
+    onDeleteTrackClick: (() -> Unit)? = null,
 ) {
     Box {
         var isMenuExpanded by remember {
@@ -231,7 +247,8 @@ fun TrackMenuButton(
             onViewTrackInfoClick = onViewTrackInfoClick,
             onGoToAlbumClick = onGoToAlbumClick,
             onGoToArtistClick = onGoToArtistClick,
-            onRemoveFromPlaylistClick = onRemoveFromPlaylistClick
+            onRemoveFromPlaylistClick = onRemoveFromPlaylistClick,
+            onDeleteTrackClick = onDeleteTrackClick,
         )
     }
 }

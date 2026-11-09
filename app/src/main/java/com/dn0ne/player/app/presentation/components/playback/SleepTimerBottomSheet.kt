@@ -45,6 +45,8 @@ fun SleepTimerBottomSheet(
         ) {
             val minutesLeft by SleepTimer.minutesLeft.collectAsState()
             val isRunning by SleepTimer.isRunning.collectAsState()
+            val playCount by SleepTimer.playCount.collectAsState()
+            val isPlayCountRunning by SleepTimer.isPlayCountRunning.collectAsState()
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -70,6 +72,7 @@ fun SleepTimerBottomSheet(
                 }
 
                 FilledTonalButton(
+                    enabled = isRunning || minutesLeft > 0,
                     onClick = {
                         if (isRunning) {
                             SleepTimer.stop()
@@ -89,9 +92,33 @@ fun SleepTimerBottomSheet(
             Slider(
                 value = minutesLeft.toFloat(),
                 onValueChange = {
-                    SleepTimer.updateMinutesLeft(it.toInt())
+                    SleepTimer.updateMinutesLeft((it / 5f).toInt() * 5)
                 },
-                valueRange = 1f..120f
+                valueRange = 0f..120f,
+                steps = 23,
+                enabled = !isRunning
+            )
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Play counts: $playCount ${if (playCount == 1) "time" else "times"}", style = MaterialTheme.typography.titleMedium)
+                FilledTonalButton(
+                    onClick = {
+                        if (isPlayCountRunning) SleepTimer.stop() else SleepTimer.startAfterPlayCount()
+                    }
+                ) {
+                    Text(if (isPlayCountRunning) context.resources.getString(R.string.stop_timer) else context.resources.getString(R.string.start_timer))
+                }
+            }
+            Slider(
+                value = playCount.toFloat(),
+                onValueChange = { SleepTimer.updatePlayCount(it.toInt()) },
+                valueRange = 1f..10f,
+                steps = 8,
+                enabled = !isPlayCountRunning
             )
         }
     }

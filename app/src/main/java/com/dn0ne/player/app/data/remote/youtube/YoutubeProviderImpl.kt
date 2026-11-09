@@ -1,5 +1,6 @@
 package com.dn0ne.player.app.data.remote.youtube
 
+import android.net.Uri
 import android.util.Log
 import com.dn0ne.player.app.data.download.DownloadErrorClassifier
 import com.dn0ne.player.app.data.download.DownloadRateLimitedException
@@ -10,12 +11,15 @@ import com.dn0ne.player.app.domain.youtube.VideoInfo
 import com.dn0ne.player.app.domain.youtube.YoutubeInfo
 import com.dn0ne.player.app.domain.youtube.YoutubeSearchItem
 import com.yausername.youtubedl_android.YoutubeDLRequest
+import io.ktor.client.HttpClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import org.schabi.newpipe.extractor.ServiceList
+import org.schabi.newpipe.extractor.stream.StreamInfoItem
 
 /**
  * Search + metadata provider backed by yt-dlp.
@@ -25,7 +29,12 @@ import kotlinx.serialization.json.Json
  */
 class YoutubeProviderImpl(
     private val engine: YtDlpEngine,
+    httpClient: HttpClient,
 ) : YoutubeProvider {
+    init {
+        NewPipeRuntime.initialize(httpClient)
+    }
+
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
@@ -71,31 +80,57 @@ class YoutubeProviderImpl(
 
             withRateLimitGuard {
                 runCatchingCancellable {
-                    // yt-dlp's search pseudo-URL. Flat playlist mode makes this one cheap call.
-                    val request = YoutubeDLRequest("ytsearch$safeLimit:$normalizedQuery").apply {
-                        addOption("--flat-playlist")
-                        addOption("--dump-single-json")
-                        addOption("-R", "1")
-                        addOption("--socket-timeout", "5")
+                    val fastItems = try {
+                        val extractor = ServiceList.YouTube
+                            .getSearchExtractor(normalizedQuery, listOf("videos"), "")
+                        extractor.fetchPage()
+                        extractor.initialPage.items
+                            .asSequence()
+                            .filterIsInstance<StreamInfoItem>()
+                            .mapNotNull { item -> runCatching { item.toYoutubeSearchItem() }.getOrNull() }
+                            .take(safeLimit)
+                            .toList()
+                        } catch (cancellation: CancellationException) {
+                            throw cancellation
+                        } catch (fastFailure: Exception) {
+                            Log.w(
+                                TAG,
+                                "Fast search failed; using yt-dlp fallback: ${fastFailure.message ?: fastFailure::class.java.simpleName}",
+                                fastFailure,
+                            )
+
+                            val request = YoutubeDLRequest("ytsearch$safeLimit:$normalizedQuery").apply {
+                                addOption("--flat-playlist")
+                                addOption("--dump-single-json")
+                                addOption("-R", "1")
+                                addOption("--socket-timeout", "5")
+                            }
+
+                            engine.awaitReady()
+                            val response = engine.execute(request)
+                            val playlistResult = json.decodeFromString<PlaylistResult>(response.out)
+                            playlistResult.entries.orEmpty().mapNotNull { it.toSearchItem() }
                     }
 
-                    val response = engine.execute(request)
-                    val playlistResult = json.decodeFromString<PlaylistResult>(response.out)
-                    val items = playlistResult.entries.orEmpty().mapNotNull { it.toSearchItem() }
-
-                    cacheMutex.withLock {
-                        val cutoff = System.currentTimeMillis() - SEARCH_CACHE_TTL_MILLIS
-                        searchCache.entries.removeAll { it.value.timestamp < cutoff }
-                        searchCache[cacheKey] = CachedSearch(
-                            timestamp = System.currentTimeMillis(),
-                            items = items
-                        )
-                    }
-
-                    items
+                    cacheSearchResults(cacheKey, fastItems)
+                    fastItems
                 }
             }
         }
+
+    private suspend fun cacheSearchResults(
+        cacheKey: String,
+        items: List<YoutubeSearchItem>,
+    ) {
+        cacheMutex.withLock {
+            val cutoff = System.currentTimeMillis() - SEARCH_CACHE_TTL_MILLIS
+            searchCache.entries.removeAll { it.value.timestamp < cutoff }
+            searchCache[cacheKey] = CachedSearch(
+                timestamp = System.currentTimeMillis(),
+                items = items,
+            )
+        }
+    }
 
     override suspend fun fetchVideoInfo(
         url: String,
@@ -281,6 +316,39 @@ class YoutubeProviderImpl(
         const val STREAM_CACHE_TTL_MILLIS = 10L * 60L * 1000L
         const val RATE_LIMIT_COOLDOWN_MILLIS = 60L * 1000L
         const val RATE_LIMIT_MESSAGE = "Too many requests"
+    }
+}
+
+private fun StreamInfoItem.toYoutubeSearchItem(): YoutubeSearchItem? {
+    val itemUrl = url?.takeIf { it.isNotBlank() } ?: return null
+    val videoId = youtubeVideoId(itemUrl) ?: return null
+    val canonicalUrl = "https://www.youtube.com/watch?v=$videoId"
+
+    return YoutubeSearchItem(
+        id = videoId,
+        title = name?.takeIf { it.isNotBlank() } ?: videoId,
+        uploader = uploaderName?.takeIf { it.isNotBlank() },
+        durationSeconds = duration
+            .takeIf { it > 0L && it <= Int.MAX_VALUE.toLong() }
+            ?.toInt(),
+        thumbnailUrl = thumbnails.firstOrNull()?.url?.takeIf { it.isNotBlank() }
+            ?: "https://i.ytimg.com/vi/$videoId/mqdefault.jpg",
+        url = itemUrl.ifBlank { canonicalUrl },
+    )
+}
+
+private fun youtubeVideoId(url: String): String? {
+    val uri = Uri.parse(url)
+    uri.getQueryParameter("v")?.takeIf { it.isNotBlank() }?.let { return it }
+
+    val segments = uri.pathSegments
+    val route = segments.indexOfFirst { it in setOf("shorts", "embed", "live", "v") }
+    if (route >= 0) return segments.getOrNull(route + 1)?.takeIf { it.isNotBlank() }
+
+    return if (uri.host.equals("youtu.be", ignoreCase = true)) {
+        segments.firstOrNull()?.takeIf { it.isNotBlank() }
+    } else {
+        null
     }
 }
 

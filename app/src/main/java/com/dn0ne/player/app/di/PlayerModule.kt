@@ -63,7 +63,7 @@ val playerModule = module {
     }
 
     single<YoutubeProvider> {
-        YoutubeProviderImpl(engine = get())
+        YoutubeProviderImpl(engine = get(), httpClient = get())
     }
 
     single<DownloadRepository>(createdAtStart = true) {
@@ -213,6 +213,7 @@ val playerModule = module {
 
     viewModel<DownloadsViewModel> {
         DownloadsViewModel(
+            context = androidContext(),
             youtubeProvider = get(),
             downloadRepository = get(),
             historyRepository = get(),

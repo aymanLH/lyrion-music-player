@@ -70,6 +70,7 @@ data class DownloadTaskState(
     val downloadState: DownloadState,
     val videoInfo: VideoInfo? = null,
     val viewState: DownloadViewState = DownloadViewState(),
+    val autoResumeCount: Int = 0,
 )
 
 @Serializable

@@ -2,9 +2,18 @@ package com.dn0ne.player.app.presentation
 
 import android.content.ClipboardManager
 import android.content.Context
+import android.Manifest
+import android.app.Activity
+import android.app.RecoverableSecurityException
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -41,6 +50,7 @@ import androidx.compose.material.icons.rounded.AddToQueue
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.FilterList
 import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
@@ -49,6 +59,7 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SelectAll
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -58,6 +69,7 @@ import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RippleConfiguration
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -67,8 +79,10 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
@@ -82,6 +96,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
@@ -131,6 +146,8 @@ import com.materialkolor.ktx.toColor
 import com.materialkolor.ktx.toHct
 import com.materialkolor.rememberDynamicColorScheme
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.Serializable
@@ -193,9 +210,12 @@ fun PlayerScreen(
 
         // Keep the existing bitmap-driven extraction. The currently displayed palette remains
         // in place until KMPalette finishes extracting the next cover.
-        dominantColorState.updateFrom(bitmap)
+        Log.d("YT_DEBUG", "Theme palette extraction start trackId=$trackId thread=${Thread.currentThread().name}")
+        withContext(Dispatchers.Default) {
+            dominantColorState.updateFrom(bitmap)
+        }
         val result = snapshotFlow { dominantColorState.result }.filterNotNull().first()
-        Log.d("YT_DEBUG", "Theme palette extracted trackId=$trackId success=${result.paletteOrNull != null}")
+        Log.d("YT_DEBUG", "Theme palette extraction finish trackId=$trackId thread=${Thread.currentThread().name} success=${result.paletteOrNull != null}")
         val swatches = result.paletteOrNull?.swatches?.sortedByDescending { it.population }
         val extractedSeed = swatches?.let { paletteSwatches ->
             val firstSwatch = paletteSwatches.firstOrNull()
@@ -306,6 +326,106 @@ fun PlayerScreen(
                     .background(color = MaterialTheme.colorScheme.background)
             ) {
                 val context = LocalContext.current
+                var tracksAwaitingDeleteConfirmation by remember { mutableStateOf<List<Track>?>(null) }
+                var playlistsAwaitingDeleteConfirmation by remember { mutableStateOf<List<Playlist>?>(null) }
+                var tracksAwaitingMediaStoreConsent by remember { mutableStateOf<List<Track>?>(null) }
+                var tracksAwaitingWritePermission by remember { mutableStateOf<List<Track>>(emptyList()) }
+                var legacyTracksToDelete by remember { mutableStateOf<List<Track>>(emptyList()) }
+                var legacyTracksDeleted by remember { mutableStateOf<List<Track>>(emptyList()) }
+                var legacyTrackAwaitingConsent by remember { mutableStateOf<Track?>(null) }
+
+                val mediaDeleteRequestLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.StartIntentSenderForResult()
+                ) { result ->
+                    if (result.resultCode == Activity.RESULT_OK) {
+                        tracksAwaitingMediaStoreConsent?.let(viewModel::onTracksDeleted)
+                        tracksAwaitingMediaStoreConsent = null
+
+                        legacyTrackAwaitingConsent?.let { track ->
+                            legacyTracksDeleted = legacyTracksDeleted + track
+                            legacyTracksToDelete = legacyTracksToDelete.drop(1)
+                            legacyTrackAwaitingConsent = null
+                        }
+                    } else {
+                        tracksAwaitingMediaStoreConsent = null
+                        legacyTracksToDelete = emptyList()
+                        legacyTracksDeleted = emptyList()
+                        legacyTrackAwaitingConsent = null
+                    }
+                }
+                val legacyWritePermissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission()
+                ) { granted ->
+                    if (granted) {
+                        legacyTracksToDelete = tracksAwaitingWritePermission
+                        tracksAwaitingWritePermission = emptyList()
+                    } else {
+                        tracksAwaitingWritePermission = emptyList()
+                    }
+                }
+
+                LaunchedEffect(legacyTracksToDelete.firstOrNull(), legacyTrackAwaitingConsent) {
+                    if (legacyTrackAwaitingConsent != null) return@LaunchedEffect
+                    val track = legacyTracksToDelete.firstOrNull()
+                    if (track == null) {
+                        if (legacyTracksDeleted.isNotEmpty()) {
+                            viewModel.onTracksDeleted(legacyTracksDeleted)
+                            legacyTracksDeleted = emptyList()
+                        }
+                        return@LaunchedEffect
+                    }
+
+                    try {
+                        val deleted = withContext(Dispatchers.IO) {
+                            context.contentResolver.delete(track.uri, null, null) > 0
+                        }
+                        if (deleted) legacyTracksDeleted = legacyTracksDeleted + track
+                        legacyTracksToDelete = legacyTracksToDelete.drop(1)
+                    } catch (exception: RecoverableSecurityException) {
+                        legacyTrackAwaitingConsent = track
+                        mediaDeleteRequestLauncher.launch(
+                            IntentSenderRequest.Builder(
+                                exception.userAction.actionIntent.intentSender
+                            ).build()
+                        )
+                    } catch (exception: Exception) {
+                        Log.e("YT_DEBUG", "Could not delete media item ${track.uri}", exception)
+                        legacyTracksToDelete = legacyTracksToDelete.drop(1)
+                    }
+                }
+
+                val startTrackDeletion: (List<Track>) -> Unit = { tracks ->
+                    if (tracks.isNotEmpty()) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            tracksAwaitingMediaStoreConsent = tracks
+                            runCatching {
+                                MediaStore.createDeleteRequest(
+                                    context.contentResolver,
+                                    tracks.map { it.uri },
+                                )
+                            }.onSuccess { request ->
+                                mediaDeleteRequestLauncher.launch(
+                                    IntentSenderRequest.Builder(request.intentSender).build()
+                                )
+                            }.onFailure { exception ->
+                                tracksAwaitingMediaStoreConsent = null
+                                Log.e("YT_DEBUG", "Could not request media deletion", exception)
+                            }
+                        } else if (
+                            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+                            ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                            ) != PackageManager.PERMISSION_GRANTED
+                        ) {
+                            tracksAwaitingWritePermission = tracks
+                            legacyWritePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                        } else {
+                            legacyTracksDeleted = emptyList()
+                            legacyTracksToDelete = tracks
+                        }
+                    }
+                }
                 val trackSort by viewModel.trackSort.collectAsState()
                 val trackSortOrder by viewModel.trackSortOrder.collectAsState()
                 val playlistSort by viewModel.playlistSort.collectAsState()
@@ -326,13 +446,30 @@ fun PlayerScreen(
 
                 val navController = rememberNavController()
                 val currentBackStackEntry by navController.currentBackStackEntryAsState()
-                val downloadRouteNames = setOf(
-                    PlayerRoutes.DownloadSearch::class.simpleName,
-                    PlayerRoutes.DownloadQueue::class.simpleName,
-                    PlayerRoutes.DownloadHistory::class.simpleName,
-                )
-                val isDownloadRoute = currentBackStackEntry?.destination?.route
-                    ?.substringBefore('?')?.substringAfterLast('.') in downloadRouteNames
+                val currentDestination = currentBackStackEntry?.destination?.route ?: "<none>"
+                val activeDownloadScreens = remember { mutableStateMapOf<String, Boolean>() }
+                val isDownloadScreenOpen = activeDownloadScreens.isNotEmpty()
+                val latestDestination = rememberUpdatedState(currentDestination)
+                val reportDownloadScreenVisibility = remember {
+                    { screen: String, isOpen: Boolean ->
+                        if (isOpen) activeDownloadScreens[screen] = true
+                        else activeDownloadScreens.remove(screen)
+                        Log.i(
+                            "YT_DEBUG",
+                            "Download screen state screen=$screen open=$isOpen " +
+                                    "destination=${latestDestination.value} " +
+                                    "active=${activeDownloadScreens.keys.joinToString()}",
+                        )
+                        Unit
+                    }
+                }
+                LaunchedEffect(currentDestination) {
+                    Log.i("YT_DEBUG", "Player navigation destination=$currentDestination")
+                }
+                val canComposeJumpButtons = !isDownloadScreenOpen &&
+                        !showAddToOrCreatePlaylistSheet &&
+                        tracksAwaitingDeleteConfirmation == null &&
+                        playlistsAwaitingDeleteConfirmation == null
 
                 var showScrollToTopButton by remember {
                     mutableStateOf(false)
@@ -578,7 +715,13 @@ fun PlayerScreen(
                                 viewModel.settings.updateGridPlaylists(
                                     !gridPlaylists
                                 )
-                            }
+                            },
+                            onDeleteTracksClick = { tracks ->
+                                tracksAwaitingDeleteConfirmation = tracks
+                            },
+                            onDeletePlaylistsClick = { playlistsToDelete ->
+                                playlistsAwaitingDeleteConfirmation = playlistsToDelete
+                            },
                         )
                     }
 
@@ -586,6 +729,7 @@ fun PlayerScreen(
                         val downloadsViewModel: DownloadsViewModel = koinViewModel()
                         DownloadSearchScreen(
                             viewModel = downloadsViewModel,
+                            onDownloadScreenVisibilityChanged = reportDownloadScreenVisibility,
                             onBack = { navController.popBackStack() },
                             onOpenQueue = { navController.navigate(PlayerRoutes.DownloadQueue) },
                             onOpenHistory = { navController.navigate(PlayerRoutes.DownloadHistory) },
@@ -596,6 +740,7 @@ fun PlayerScreen(
                         val downloadsViewModel: DownloadsViewModel = koinViewModel()
                         DownloadQueueScreen(
                             viewModel = downloadsViewModel,
+                            onDownloadScreenVisibilityChanged = reportDownloadScreenVisibility,
                             onBack = { navController.popBackStack() },
                         )
                     }
@@ -604,6 +749,7 @@ fun PlayerScreen(
                         val downloadsViewModel: DownloadsViewModel = koinViewModel()
                         DownloadHistoryScreen(
                             viewModel = downloadsViewModel,
+                            onDownloadScreenVisibilityChanged = reportDownloadScreenVisibility,
                             onBack = { navController.popBackStack() },
                             onOpenTrack = { entry ->
                                 val storedUri = entry.mediaStoreUri?.let {
@@ -691,6 +837,9 @@ fun PlayerScreen(
                                 listState = listState,
                                 playlist = playlist,
                                 currentTrack = currentTrack,
+                                onDeleteTracksClick = { tracks ->
+                                    tracksAwaitingDeleteConfirmation = tracks
+                                },
                                 onTrackClick = { track, playlist ->
                                     viewModel.onEvent(
                                         PlayerScreenEvent.OnTrackClick(
@@ -803,6 +952,9 @@ fun PlayerScreen(
                                 listState = listState,
                                 playlist = playlist,
                                 currentTrack = currentTrack,
+                                onDeleteTracksClick = { tracks ->
+                                    tracksAwaitingDeleteConfirmation = tracks
+                                },
                                 onRenamePlaylistClick = {
                                     showRenameSheet = true
                                 },
@@ -910,11 +1062,11 @@ fun PlayerScreen(
                     val isPlayerExpanded by remember {
                         derivedStateOf { playbackState.isPlayerExpanded }
                     }
-                    if (!isPlayerExpanded) {
+                    if (!isPlayerExpanded && canComposeJumpButtons) {
                         ScrollToTopAndLocateButtons(
                             showScrollToTopButton = showScrollToTopButton,
                             onScrollToTopClick = onScrollToTopClick,
-                            showLocateButton = showLocateButton && !isDownloadRoute,
+                            showLocateButton = showLocateButton,
                             onLocateClick = onLocateClick,
                             showCreatePlaylistButton = showCreatePlaylistButton,
                             onCreatePlaylistClick = {
@@ -937,6 +1089,7 @@ fun PlayerScreen(
 
                             PlayerSheet(
                                 playbackStateFlow = viewModel.playbackState,
+                                canShowJumpButtons = canComposeJumpButtons,
                                 onPlayerExpandedChange = {
                                     viewModel.onEvent(PlayerScreenEvent.OnPlayerExpandedChange(it))
                                 },
@@ -961,10 +1114,18 @@ fun PlayerScreen(
                                 onPlaybackModeClick = {
                                     viewModel.onEvent(PlayerScreenEvent.OnPlaybackModeClick)
                                 },
-                                onCoverArtLoaded = {
-                                    Log.d("YT_DEBUG", "Theme cover callback trackId=$currentTrackId bitmap=${it != null}")
-                                    coverArtBitmap = it
-                                    coverArtBitmapTrackId = currentTrackId
+                                onCoverArtLoaded = { trackId, bitmap ->
+                                    val activeTrackId = viewModel.playbackState.value.currentTrack?.uri?.toString()
+                                    if (trackId == activeTrackId) {
+                                        Log.d("YT_DEBUG", "Theme cover callback trackId=$trackId bitmap=${bitmap != null}")
+                                        coverArtBitmap = bitmap
+                                        coverArtBitmapTrackId = trackId
+                                    } else {
+                                        Log.d("YT_DEBUG", "Theme cover callback ignored stale trackId=$trackId active=$activeTrackId")
+                                    }
+                                },
+                                onSeekToQueueIndex = {
+                                    viewModel.onEvent(PlayerScreenEvent.OnSeekToQueueIndex(it))
                                 },
                                 onPlayNextClick = {
                                     viewModel.onEvent(PlayerScreenEvent.OnPlayNextClick(it))
@@ -1114,6 +1275,59 @@ fun PlayerScreen(
                     )
                 }
 
+                tracksAwaitingDeleteConfirmation?.let { tracks ->
+                    AlertDialog(
+                        onDismissRequest = { tracksAwaitingDeleteConfirmation = null },
+                        title = { Text(context.getString(R.string.delete_selected_songs_title)) },
+                        text = {
+                            Text(context.getString(R.string.delete_selected_songs_text, tracks.size))
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    tracksAwaitingDeleteConfirmation = null
+                                    startTrackDeletion(tracks)
+                                }
+                            ) { Text(context.getString(R.string.delete)) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { tracksAwaitingDeleteConfirmation = null }) {
+                                Text(context.getString(R.string.cancel))
+                            }
+                        },
+                    )
+                }
+
+                playlistsAwaitingDeleteConfirmation?.let { playlistsToDelete ->
+                    AlertDialog(
+                        onDismissRequest = { playlistsAwaitingDeleteConfirmation = null },
+                        title = { Text(context.getString(R.string.delete_selected_playlists_title)) },
+                        text = {
+                            Text(
+                                context.getString(
+                                    R.string.delete_selected_playlists_text,
+                                    playlistsToDelete.size,
+                                )
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    playlistsToDelete.forEach { playlist ->
+                                        viewModel.onEvent(PlayerScreenEvent.OnDeletePlaylistClick(playlist))
+                                    }
+                                    playlistsAwaitingDeleteConfirmation = null
+                                }
+                            ) { Text(context.getString(R.string.delete)) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { playlistsAwaitingDeleteConfirmation = null }) {
+                                Text(context.getString(R.string.cancel))
+                            }
+                        },
+                    )
+                }
+
                 val settingsSheetState by viewModel.settingsSheetState.collectAsState()
                 SettingsSheet(
                     state = settingsSheetState,
@@ -1176,6 +1390,8 @@ fun MainPlayerScreen(
     onGridPlaylistsClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onDownloadsClick: () -> Unit,
+    onDeleteTracksClick: (List<Track>) -> Unit,
+    onDeletePlaylistsClick: (List<Playlist>) -> Unit,
 ) {
     val context = LocalContext.current
 
@@ -1285,7 +1501,7 @@ fun MainPlayerScreen(
                             }
 
                             Row {
-                                if (tab != Tab.Tracks) {
+                                if (tab != Tab.Tracks && collapseFraction > 0.55f) {
                                     IconButton(
                                         onClick = onGridPlaylistsClick
                                     ) {
@@ -1460,6 +1676,34 @@ fun MainPlayerScreen(
                                     }
                                 }
 
+                                if (selectedTracks.isNotEmpty()) {
+                                    IconButton(
+                                        onClick = {
+                                            onDeleteTracksClick(selectedTracks.toList())
+                                            isInSelectionMode = false
+                                            selectedTracks.clear()
+                                        }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Delete,
+                                            contentDescription = context.resources.getString(R.string.delete_song)
+                                        )
+                                    }
+                                } else if (tab == Tab.Playlists && selectedPlaylists.isNotEmpty()) {
+                                    IconButton(
+                                        onClick = {
+                                            onDeletePlaylistsClick(selectedPlaylists.toList())
+                                            isInSelectionMode = false
+                                            selectedPlaylists.clear()
+                                        }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Delete,
+                                            contentDescription = context.resources.getString(R.string.delete_playlist)
+                                        )
+                                    }
+                                }
+
                                 IconButton(
                                     onClick = {
                                         showSearchField = true
@@ -1528,7 +1772,8 @@ fun MainPlayerScreen(
                         onLongClick = {
                             isInSelectionMode = true
                             selectedTracks.add(it)
-                        }
+                        },
+                        onDeleteTrackClick = { onDeleteTracksClick(listOf(it)) }
                     )
                 } else {
                     selectionList(

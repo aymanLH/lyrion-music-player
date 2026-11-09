@@ -15,3 +15,8 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+.gradle-local/
+.kotlin/
+.vscode/
+current-phone-screen.png

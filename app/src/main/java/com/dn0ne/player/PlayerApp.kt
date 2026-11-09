@@ -32,8 +32,8 @@ class PlayerApp : Application() {
                 val koin = GlobalContext.get()
                 val downloadRepository = koin.get<DownloadRepository>()
                 koin.get<YtDlpUpdater>().autoUpdateIfNeeded {
-                    // Only update while the queue is idle.
-                    !downloadRepository.hasRunningTasks()
+                    // Do not update the engine while pending work is waiting for UI resume.
+                    !downloadRepository.hasUnfinishedTasks()
                 }
             }
         }

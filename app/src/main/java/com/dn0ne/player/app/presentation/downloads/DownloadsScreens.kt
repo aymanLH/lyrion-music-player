@@ -73,6 +73,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -101,6 +102,7 @@ fun DownloadSearchScreen(
     onBack: () -> Unit,
     onOpenQueue: () -> Unit,
     onOpenHistory: () -> Unit,
+    onDownloadScreenVisibilityChanged: (screen: String, isOpen: Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.search.collectAsStateWithLifecycle()
@@ -108,10 +110,15 @@ fun DownloadSearchScreen(
     val history by viewModel.history.collectAsStateWithLifecycle()
     val preview by viewModel.preview.collectAsStateWithLifecycle()
     val focusManager = LocalFocusManager.current
+    val uriHandler = LocalUriHandler.current
     val initial = !state.hasSearched
     var missingEntry by remember { mutableStateOf<DownloadHistoryEntry?>(null) }
 
     DisposableEffect(viewModel) { onDispose { viewModel.stopPreview() } }
+    DisposableEffect(onDownloadScreenVisibilityChanged) {
+        onDownloadScreenVisibilityChanged("Search", true)
+        onDispose { onDownloadScreenVisibilityChanged("Search", false) }
+    }
 
     BackHandler(enabled = state.playlist == null) { onBack() }
     val listState = rememberLazyListState()
@@ -142,7 +149,9 @@ fun DownloadSearchScreen(
 
     LaunchedEffect(initial) {
         resultPositioned = false
-        if (!initial) {
+        if (initial) {
+            listState.scrollToItem(0)
+        } else {
             listState.scrollToItem(index = 1)
             resultPositioned = true
         }
@@ -181,7 +190,11 @@ fun DownloadSearchScreen(
                             .onSizeChanged { searchHeightPx = it.height },
                     )
                 }
-                if (state.isSearching) item { CenterMessage("Searching…", loading = true, modifier = Modifier.padding(top = 8.dp)) }
+                if (state.isSearching) {
+                    items(5, key = { "search-skeleton-$it" }) {
+                        SearchResultSkeletonRow(Modifier.padding(top = 8.dp))
+                    }
+                }
                 state.error?.let { message -> item { CenterMessage(message, modifier = Modifier.padding(top = 8.dp)) } }
                 if (state.hasSearched && !state.isSearching && state.results.isEmpty() && state.error == null && state.playlist == null) {
                     item { CenterMessage("No results found", modifier = Modifier.padding(top = 8.dp)) }
@@ -197,6 +210,7 @@ fun DownloadSearchScreen(
                         isPreviewing = preview.videoId == item.id && preview.isPlaying,
                         isPreviewLoading = preview.videoId == item.id && (preview.isResolving || preview.isBuffering),
                         onPreview = { viewModel.preview(item) },
+                        onOpenYoutube = { uriHandler.openUri(item.url) },
                         onDownload = {
                             if (matchingTask?.value?.downloadState is DownloadState.Error) viewModel.restart(matchingTask.key)
                             else viewModel.enqueue(item)
@@ -268,9 +282,14 @@ fun DownloadSearchScreen(
 fun DownloadQueueScreen(
     viewModel: DownloadsViewModel,
     onBack: () -> Unit,
+    onDownloadScreenVisibilityChanged: (screen: String, isOpen: Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val tasks by viewModel.tasks.collectAsStateWithLifecycle()
+    DisposableEffect(onDownloadScreenVisibilityChanged) {
+        onDownloadScreenVisibilityChanged("Queue", true)
+        onDispose { onDownloadScreenVisibilityChanged("Queue", false) }
+    }
     var collapseFraction by remember { mutableStateOf(1f) }
     BackHandler(onBack = onBack)
     LazyColumnWithCollapsibleTopBar(
@@ -299,6 +318,7 @@ fun DownloadHistoryScreen(
     viewModel: DownloadsViewModel,
     onBack: () -> Unit,
     onOpenTrack: suspend (DownloadHistoryEntry) -> Boolean,
+    onDownloadScreenVisibilityChanged: (screen: String, isOpen: Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val entries by viewModel.history.collectAsStateWithLifecycle()
@@ -307,6 +327,10 @@ fun DownloadHistoryScreen(
     var entryIssue by remember { mutableStateOf<HistoryEntryIssue?>(null) }
     val scope = rememberCoroutineScope()
     var collapseFraction by remember { mutableStateOf(1f) }
+    DisposableEffect(onDownloadScreenVisibilityChanged) {
+        onDownloadScreenVisibilityChanged("History", true)
+        onDispose { onDownloadScreenVisibilityChanged("History", false) }
+    }
     val filtered = entries.filter { it.title.contains(query, true) || it.uploader.contains(query, true) }
     suspend fun openHistoryEntry(entry: DownloadHistoryEntry) {
         if (entry.status == DownloadHistoryStatus.FAILED) {
@@ -430,6 +454,7 @@ private fun SearchResultRow(
     isPreviewing: Boolean,
     isPreviewLoading: Boolean,
     onPreview: () -> Unit,
+    onOpenYoutube: () -> Unit,
     onDownload: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -437,7 +462,7 @@ private fun SearchResultRow(
         modifier = modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surfaceContainerLow).padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Thumbnail(item.thumbnailUrl, Modifier.size(64.dp))
+        Thumbnail(item.thumbnailUrl, Modifier.size(64.dp).clickable(onClick = onOpenYoutube))
         Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(item.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(item.uploader ?: "YouTube", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -457,6 +482,36 @@ private fun SearchResultRow(
                 else -> Icon(Icons.Rounded.Download, "Download")
             }
         }
+    }
+}
+
+@Composable
+private fun SearchResultSkeletonRow(modifier: Modifier = Modifier) {
+    val placeholderColor = MaterialTheme.colorScheme.surfaceVariant
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(64.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(placeholderColor)
+        )
+        Column(
+            Modifier.weight(1f).padding(horizontal = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Box(Modifier.fillMaxWidth(.88f).height(14.dp).clip(RoundedCornerShape(7.dp)).background(placeholderColor))
+            Box(Modifier.fillMaxWidth(.62f).height(11.dp).clip(RoundedCornerShape(6.dp)).background(placeholderColor))
+            Box(Modifier.fillMaxWidth(.3f).height(9.dp).clip(RoundedCornerShape(5.dp)).background(placeholderColor))
+        }
+        Box(Modifier.padding(horizontal = 4.dp).size(34.dp).clip(RoundedCornerShape(50)).background(placeholderColor))
+        Box(Modifier.size(34.dp).clip(RoundedCornerShape(50)).background(placeholderColor))
     }
 }
 
@@ -485,7 +540,11 @@ private fun QueueTaskRow(task: DownloadTask, state: DownloadTaskState, onCancel:
             }
             when (downloadState) {
                 is DownloadState.FetchingInfo, is DownloadState.Running -> IconButton(onClick = onCancel) { Icon(Icons.Rounded.Close, "Cancel download") }
-                is DownloadState.Canceled, is DownloadState.Error -> IconButton(onClick = onRetry) { Icon(Icons.Rounded.Refresh, "Retry") }
+                is DownloadState.Canceled -> Row {
+                    IconButton(onClick = onRetry) { Icon(Icons.Rounded.Refresh, "Retry") }
+                    IconButton(onClick = onRemove) { Icon(Icons.Rounded.Delete, "Delete canceled download") }
+                }
+                is DownloadState.Error -> IconButton(onClick = onRetry) { Icon(Icons.Rounded.Refresh, "Retry") }
                 else -> IconButton(onClick = onRemove) { Icon(Icons.Rounded.Delete, "Remove from queue") }
             }
         }
@@ -562,6 +621,7 @@ private fun PlaylistPicker(
                 TextButton(onClick = onSelectAll) { Text("Select all") }
                 TextButton(onClick = onSelectNone) { Text("Select none") }
             }
+            Button(onClick = onConfirm, enabled = selected.isNotEmpty(), modifier = Modifier.fillMaxWidth()) { Text("Download ${selected.size} selected") }
             androidx.compose.foundation.lazy.LazyColumn(modifier = Modifier.weight(1f, fill = false).height(360.dp)) {
                 items(entries.size) { index ->
                     val entry = entries[index]
@@ -573,7 +633,7 @@ private fun PlaylistPicker(
                     }
                 }
             }
-            Button(onClick = onConfirm, enabled = selected.isNotEmpty(), modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)) { Text("Download ${selected.size} selected") }
+            Spacer(Modifier.height(12.dp))
         }
     }
 }

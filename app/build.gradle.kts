@@ -61,6 +61,7 @@ android {
     }
 
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -83,6 +84,8 @@ tasks.withType<com.android.build.gradle.internal.tasks.CompileArtProfileTask> {
 }
 
 dependencies {
+
+    coreLibraryDesugaring(libs.desugar.jdk.libs.nio)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -123,6 +126,7 @@ dependencies {
     implementation(libs.scrollbars)
     implementation(libs.youtubedl.android.library)
     implementation(libs.youtubedl.android.ffmpeg)
+    implementation(libs.newpipe.extractor)
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)

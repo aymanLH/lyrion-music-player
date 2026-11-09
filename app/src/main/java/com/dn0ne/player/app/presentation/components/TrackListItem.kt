@@ -39,6 +39,7 @@ fun TrackListItem(
     onGoToAlbumClick: () -> Unit,
     onGoToArtistClick: () -> Unit,
     onRemoveFromPlaylistClick: (() -> Unit)? = null,
+    onDeleteTrackClick: (() -> Unit)? = null,
     dragHandle: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -99,7 +100,8 @@ fun TrackListItem(
                 onViewTrackInfoClick = onViewTrackInfoClick,
                 onGoToAlbumClick = onGoToAlbumClick,
                 onGoToArtistClick = onGoToArtistClick,
-                onRemoveFromPlaylistClick = onRemoveFromPlaylistClick
+                onRemoveFromPlaylistClick = onRemoveFromPlaylistClick,
+                onDeleteTrackClick = onDeleteTrackClick,
             )
 
             dragHandle?.invoke()

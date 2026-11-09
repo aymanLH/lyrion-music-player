@@ -17,6 +17,7 @@ import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.AddToQueue
 import androidx.compose.material.icons.rounded.ArrowBackIosNew
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.FilterList
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SelectAll
@@ -61,6 +62,7 @@ fun Playlist(
     listState: LazyListState = rememberLazyListState(),
     playlist: Playlist,
     currentTrack: Track?,
+    onDeleteTracksClick: (List<Track>) -> Unit,
     onTrackClick: (Track, Playlist) -> Unit,
     onPlayNextClick: (Track) -> Unit,
     onAddToQueueClick: (List<Track>) -> Unit,
@@ -308,6 +310,19 @@ fun Playlist(
 
                                 IconButton(
                                     onClick = {
+                                        onDeleteTracksClick(selectedTracks.toList())
+                                        isInSelectionMode = false
+                                        selectedTracks.clear()
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Delete,
+                                        contentDescription = context.resources.getString(R.string.delete_song)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = {
                                         showSearchField = true
                                     }
                                 ) {
@@ -354,6 +369,7 @@ fun Playlist(
                 onViewTrackInfoClick = onViewTrackInfoClick,
                 onGoToAlbumClick = onGoToAlbumClick,
                 onGoToArtistClick = onGoToArtistClick,
+                onDeleteTrackClick = { track -> onDeleteTracksClick(listOf(track)) },
                 onLongClick = {
                     isInSelectionMode = true
                     selectedTracks.add(it)

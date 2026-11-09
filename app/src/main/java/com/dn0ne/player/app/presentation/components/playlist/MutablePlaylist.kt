@@ -79,6 +79,7 @@ fun MutablePlaylist(
     listState: LazyListState = rememberLazyListState(),
     playlist: Playlist,
     currentTrack: Track?,
+    onDeleteTracksClick: (List<Track>) -> Unit,
     onRenamePlaylistClick: () -> Unit,
     onDeletePlaylistClick: () -> Unit,
     onTrackClick: (Track, Playlist) -> Unit,
@@ -378,6 +379,19 @@ fun MutablePlaylist(
 
                                 IconButton(
                                     onClick = {
+                                        onDeleteTracksClick(selectedTracks.toList())
+                                        isInSelectionMode = false
+                                        selectedTracks.clear()
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Delete,
+                                        contentDescription = context.resources.getString(R.string.delete_song)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = {
                                         showSearchField = true
                                     }
                                 ) {
@@ -451,6 +465,7 @@ fun MutablePlaylist(
                         onViewTrackInfoClick = { onViewTrackInfoClick(track) },
                         onGoToAlbumClick = { onGoToAlbumClick(track) },
                         onGoToArtistClick = { onGoToArtistClick(track) },
+                        onDeleteTrackClick = { onDeleteTracksClick(listOf(track)) },
                         onLongClick = {
                             isInSelectionMode = true
                             selectedTracks.add(track)

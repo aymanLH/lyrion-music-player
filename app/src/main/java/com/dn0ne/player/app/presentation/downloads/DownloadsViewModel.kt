@@ -1,7 +1,10 @@
 package com.dn0ne.player.app.presentation.downloads
 
+import android.content.Context
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.dn0ne.player.DownloadService
 import com.dn0ne.player.app.data.local.history.DownloadHistoryEntry
 import com.dn0ne.player.app.data.preview.PreviewPlayer
 import com.dn0ne.player.app.data.preview.PreviewState
@@ -38,11 +41,13 @@ data class DownloadsSearchState(
 )
 
 class DownloadsViewModel(
+    context: Context,
     private val youtubeProvider: YoutubeProvider,
     private val downloadRepository: DownloadRepository,
     private val historyRepository: DownloadHistoryRepository,
     val previewPlayer: PreviewPlayer,
 ) : ViewModel() {
+    private val appContext = context.applicationContext
     private val _search = MutableStateFlow(DownloadsSearchState())
     val search: StateFlow<DownloadsSearchState> = _search.asStateFlow()
 
@@ -89,11 +94,17 @@ class DownloadsViewModel(
                             }
                         }
                     }
-                    .onFailure { error -> _search.update { it.copy(isSearching = false, error = error.message ?: "Could not load this YouTube link") } }
+                    .onFailure { error ->
+                        Log.e(TAG, "YouTube link lookup failed: ${error.message}", error)
+                        _search.update { it.copy(isSearching = false, error = error.message ?: error::class.java.simpleName) }
+                    }
             } else {
                 youtubeProvider.search(query)
                     .onSuccess { items -> _search.update { it.copy(results = items, isSearching = false) } }
-                    .onFailure { error -> _search.update { it.copy(isSearching = false, error = error.message ?: "Search failed") } }
+                    .onFailure { error ->
+                        Log.e(TAG, "YouTube search failed: ${error.message}", error)
+                        _search.update { it.copy(isSearching = false, error = error.message ?: error::class.java.simpleName) }
+                    }
             }
         }
     }
@@ -114,13 +125,33 @@ class DownloadsViewModel(
         val state = _search.value
         val playlist = state.playlist ?: return
         val url = state.playlistUrl ?: return
-        downloadRepository.enqueuePlaylist(url, state.selectedPlaylistIndices.sorted(), playlist)
-        _search.update { it.copy(playlist = null, playlistUrl = null) }
+        val serviceStarted = DownloadService.start(appContext)
+        downloadRepository.enqueuePlaylist(
+            url,
+            state.selectedPlaylistIndices.sorted(),
+            playlist,
+            serviceStartSucceeded = serviceStarted,
+        )
+        _search.update {
+            it.copy(
+                query = "",
+                hasSearched = false,
+                results = emptyList(),
+                isSearching = false,
+                error = null,
+                playlistUrl = null,
+                playlist = null,
+                selectedPlaylistIndices = emptySet(),
+            )
+        }
     }
 
     fun dismissPlaylist() = _search.update { it.copy(playlist = null, playlistUrl = null) }
 
-    fun enqueue(item: YoutubeSearchItem) = downloadRepository.enqueueSearchItem(item)
+    fun enqueue(item: YoutubeSearchItem) {
+        val serviceStarted = DownloadService.start(appContext)
+        downloadRepository.enqueueSearchItem(item, serviceStartSucceeded = serviceStarted)
+    }
     fun preview(item: YoutubeSearchItem) = previewPlayer.toggle(item)
     fun stopPreview() = previewPlayer.stop()
 
@@ -130,7 +161,10 @@ class DownloadsViewModel(
     }
 
     fun cancel(task: DownloadTask) { downloadRepository.cancel(task) }
-    fun restart(task: DownloadTask) { downloadRepository.restart(task) }
+    fun restart(task: DownloadTask) {
+        val serviceStarted = DownloadService.start(appContext)
+        downloadRepository.restart(task, serviceStartSucceeded = serviceStarted)
+    }
     fun remove(task: DownloadTask) { downloadRepository.remove(task) }
 
     fun isQueuedOrCompleted(item: YoutubeSearchItem): Boolean {
@@ -154,7 +188,10 @@ class DownloadsViewModel(
         viewModelScope.launch { historyRepository.deleteAll() }
     }
 
-    fun redownload(entry: DownloadHistoryEntry) = downloadRepository.enqueueUrl(entry.sourceUrl)
+    fun redownload(entry: DownloadHistoryEntry) {
+        val serviceStarted = DownloadService.start(appContext)
+        downloadRepository.enqueueUrl(entry.sourceUrl, serviceStartSucceeded = serviceStarted)
+    }
 
     private fun VideoInfo.toSearchItem(fallbackUrl: String): YoutubeSearchItem = YoutubeSearchItem(
         id = id,
@@ -164,4 +201,8 @@ class DownloadsViewModel(
         thumbnailUrl = thumbnail ?: "https://i.ytimg.com/vi/$id/mqdefault.jpg",
         url = webpageUrl ?: originalUrl ?: fallbackUrl,
     )
+
+    private companion object {
+        const val TAG = "YT_DEBUG"
+    }
 }

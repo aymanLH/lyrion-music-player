@@ -8,9 +8,9 @@
     <!-- Metadata provider link -->
     <string name="musicbrainz_uri" translatable="false">https://musicbrainz.org/</string>
     <!-- Repository link -->
-    <string name="repo_url" translatable="false">https://github.com/dn0ne/lotus</string>
+    <string name="repo_url" translatable="false">https://github.com/aymanLH/lyrion-music-player</string>
     <!-- Feedback mail link -->
-    <string name="feedback_url" translatable="false">mailto:dev.dn0ne@gmail.com</string>
+    <string name="feedback_url" translatable="false">mailto:aymen.dev07@gmail.com</string>
 
     <!-- Common back button -->
     <string name="back">Back</string>
@@ -221,6 +221,11 @@
     <string name="create">Create</string>
     <string name="reorder_track">Reorder track</string>
     <string name="delete_playlist">Delete playlist</string>
+    <string name="delete_song">Delete song</string>
+    <string name="delete_selected_songs_title">Delete selected songs?</string>
+    <string name="delete_selected_songs_text">This permanently deletes %1$d song(s) from your device and removes them from playlists.</string>
+    <string name="delete_selected_playlists_title">Delete selected playlist(s)?</string>
+    <string name="delete_selected_playlists_text">This removes %1$d playlist(s). The songs in them will not be deleted.</string>
     <string name="rename_playlist">Rename playlist</string>
     <string name="rename">Rename</string>
     <string name="delete">Delete</string>

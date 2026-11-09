@@ -12,6 +12,7 @@ import androidx.annotation.OptIn
 import androidx.compose.ui.util.fastForEach
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
@@ -260,6 +261,12 @@ class PlaybackService : MediaSessionService() {
             .build()
 
         player.addListener(object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
+                    SleepTimer.onTrackCompleted()
+                }
+            }
+
             @OptIn(UnstableApi::class)
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING) {
@@ -325,7 +332,32 @@ object SleepTimer {
     private val _minutesLeft = MutableStateFlow(1)
     val minutesLeft = _minutesLeft.asStateFlow()
     fun updateMinutesLeft(value: Int) {
-        _minutesLeft.update { value }
+        _minutesLeft.update { value.coerceIn(0, 120) / 5 * 5 }
+    }
+
+    private val _playCount = MutableStateFlow(1)
+    val playCount = _playCount.asStateFlow()
+    fun updatePlayCount(value: Int) {
+        _playCount.update { value.coerceIn(1, 10) }
+    }
+
+    private val _isPlayCountRunning = MutableStateFlow(false)
+    val isPlayCountRunning = _isPlayCountRunning.asStateFlow()
+    private var remainingTracks = 0
+
+    fun startAfterPlayCount() {
+        stop()
+        remainingTracks = _playCount.value
+        _isPlayCountRunning.update { true }
+    }
+
+    fun onTrackCompleted() {
+        if (!_isPlayCountRunning.value) return
+        remainingTracks -= 1
+        if (remainingTracks <= 0) {
+            stop()
+            finishCallbacks.fastForEach { it.invoke() }
+        }
     }
 
     private val _isRunning = MutableStateFlow(false)
@@ -333,6 +365,7 @@ object SleepTimer {
 
     fun start() {
         stop()
+        if (_minutesLeft.value <= 0) return
         timer = object : CountDownTimer(_minutesLeft.value.toLong() * 60000L, 60000L) {
             override fun onTick(millisUntilFinished: Long) {
                 _minutesLeft.update { millisUntilFinished.toInt() / 60000 + 1 }
@@ -341,6 +374,7 @@ object SleepTimer {
             override fun onFinish() {
                 finishCallbacks.fastForEach { it.invoke() }
                 _isRunning.update { false }
+                timer = null
             }
 
         }.start()
@@ -350,8 +384,11 @@ object SleepTimer {
 
     fun stop() {
         timer?.cancel()
+        timer = null
 
         _isRunning.update { false }
+        _isPlayCountRunning.update { false }
+        remainingTracks = 0
     }
 
     fun addOnFinishCallback(callback: () -> Unit) {

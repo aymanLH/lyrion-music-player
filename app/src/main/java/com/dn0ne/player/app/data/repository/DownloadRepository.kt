@@ -26,12 +26,24 @@ interface DownloadRepository {
 
     fun enqueueSearchItem(item: YoutubeSearchItem)
 
+    /** Enqueue only when a foreground service was successfully requested by the UI. */
+    fun enqueueSearchItem(item: YoutubeSearchItem, serviceStartSucceeded: Boolean)
+
     fun enqueueUrl(url: String)
+
+    fun enqueueUrl(url: String, serviceStartSucceeded: Boolean)
 
     fun enqueuePlaylist(
         playlistUrl: String,
         selectedIndices: List<Int>,
         playlistResult: PlaylistResult,
+    ): List<DownloadTask>
+
+    fun enqueuePlaylist(
+        playlistUrl: String,
+        selectedIndices: List<Int>,
+        playlistResult: PlaylistResult,
+        serviceStartSucceeded: Boolean,
     ): List<DownloadTask>
 
     fun cancel(task: DownloadTask): Boolean
@@ -40,11 +52,21 @@ interface DownloadRepository {
 
     fun restart(task: DownloadTask)
 
+    fun restart(task: DownloadTask, serviceStartSucceeded: Boolean)
+
     fun remove(task: DownloadTask): Boolean
 
     fun countRunning(): Int
 
     fun hasRunningTasks(): Boolean
+
+    fun hasUnfinishedTasks(): Boolean
+
+    /** Runs [stopAction] atomically with the queue's no-unfinished-work check. */
+    fun runIfQueueIdle(stopAction: () -> Unit): Boolean
+
+    /** Resume only eligible interrupted tasks after the foreground UI has requested the service. */
+    suspend fun resumeInterruptedTasks(startServiceFromUi: () -> Boolean): Int
 
     fun currentPreferences(): DownloadPreferences
 }

@@ -10,6 +10,7 @@ import android.provider.MediaStore
 import android.util.Log
 import android.webkit.MimeTypeMap
 import java.io.File
+import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -41,9 +42,10 @@ class MediaStorePublisher(
     suspend fun publish(
         file: File,
         title: String,
+        taskId: String,
     ): Result<PublishedAudio> = withContext(Dispatchers.IO) {
         runCatching {
-            val displayName = buildDisplayName(file, title)
+            val displayName = buildDisplayName(file, title, taskId)
             val size = file.length()
 
             val published = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -70,6 +72,23 @@ class MediaStorePublisher(
             MediaStore.VOLUME_EXTERNAL_PRIMARY
         )
 
+        val existing = findExistingMediaStoreEntry(collection, displayName)
+        if (existing != null) {
+            if (existing.isPending) {
+                copyIntoMediaStore(file, existing.uri)
+                resolver.update(
+                    existing.uri,
+                    ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) },
+                    null,
+                    null,
+                )
+                Log.i(TAG, "Completed interrupted MediaStore publish uri=${existing.uri}")
+            } else {
+                Log.i(TAG, "Reused existing MediaStore publish uri=${existing.uri}")
+            }
+            return PublishedAudio(existing.uri.toString(), displayName, size)
+        }
+
         val values = ContentValues().apply {
             put(MediaStore.Audio.Media.DISPLAY_NAME, displayName)
             put(MediaStore.Audio.Media.TITLE, title)
@@ -85,11 +104,7 @@ class MediaStorePublisher(
             ?: error("MediaStore rejected the audio insert")
 
         try {
-            resolver.openOutputStream(uri)?.use { output ->
-                file.inputStream().use { input ->
-                    input.copyTo(output)
-                }
-            } ?: error("MediaStore returned no output stream")
+            copyIntoMediaStore(file, uri)
 
             values.clear()
             values.put(MediaStore.Audio.Media.IS_PENDING, 0)
@@ -106,6 +121,38 @@ class MediaStorePublisher(
         )
     }
 
+    private fun findExistingMediaStoreEntry(
+        collection: Uri,
+        displayName: String,
+    ): ExistingMediaStoreEntry? {
+        val projection = arrayOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.IS_PENDING,
+        )
+        return resolver.query(
+            collection,
+            projection,
+            "${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?",
+            arrayOf(displayName, "${Environment.DIRECTORY_MUSIC}/$ALBUM_FOLDER%"),
+            null,
+        )?.use { cursor ->
+            if (!cursor.moveToFirst()) return@use null
+            val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+            val pendingIndex = cursor.getColumnIndex(MediaStore.MediaColumns.IS_PENDING)
+            val isPending = pendingIndex >= 0 && cursor.getInt(pendingIndex) != 0
+            ExistingMediaStoreEntry(
+                uri = Uri.withAppendedPath(collection, id.toString()),
+                isPending = isPending,
+            )
+        }
+    }
+
+    private fun copyIntoMediaStore(file: File, uri: Uri) {
+        resolver.openOutputStream(uri, "w")?.use { output ->
+            file.inputStream().use { input -> input.copyTo(output) }
+        } ?: error("MediaStore returned no output stream")
+    }
+
     private suspend fun publishLegacy(
         file: File,
         displayName: String,
@@ -117,7 +164,7 @@ class MediaStorePublisher(
         )
         musicDir.mkdirs()
 
-        val destination = uniqueDestination(musicDir, displayName)
+        val destination = File(musicDir, displayName)
         file.inputStream().use { input ->
             destination.outputStream().use { output ->
                 input.copyTo(output)
@@ -147,29 +194,19 @@ class MediaStorePublisher(
         }
     }
 
-    private fun uniqueDestination(directory: File, displayName: String): File {
-        val dot = displayName.lastIndexOf('.')
-        val baseName = if (dot > 0) displayName.substring(0, dot) else displayName
-        val extension = if (dot > 0) displayName.substring(dot) else ""
-
-        var candidate = File(directory, displayName)
-        var index = 1
-        while (candidate.exists()) {
-            candidate = File(directory, "$baseName ($index)$extension")
-            index++
-        }
-        return candidate
-    }
-
-    private fun buildDisplayName(file: File, title: String): String {
+    private fun buildDisplayName(file: File, title: String, taskId: String): String {
         val extension = file.extension.ifBlank { "opus" }
+        val taskToken = MessageDigest.getInstance("SHA-256")
+            .digest(taskId.toByteArray(Charsets.UTF_8))
+            .take(4)
+            .joinToString("") { byte -> "%02x".format(byte) }
         val safeTitle = title
             .replace(Regex("[\\\\/:*?\"<>|\\u0000-\\u001F]"), "_")
             .trim()
             .ifBlank { file.nameWithoutExtension }
-            .take(MAX_TITLE_LENGTH)
+            .take(MAX_TITLE_LENGTH - taskToken.length - 3)
 
-        return "$safeTitle.$extension"
+        return "$safeTitle [$taskToken].$extension"
     }
 
     private fun mimeTypeFor(extension: String): String {
@@ -194,4 +231,9 @@ class MediaStorePublisher(
         const val MAX_TITLE_LENGTH = 200
         const val SCAN_TIMEOUT_MILLIS = 15_000L
     }
+
+    private data class ExistingMediaStoreEntry(
+        val uri: Uri,
+        val isPending: Boolean,
+    )
 }

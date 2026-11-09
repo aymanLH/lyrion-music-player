@@ -54,10 +54,10 @@ import androidx.compose.ui.util.fastFirstOrNull
 import androidx.core.view.HapticFeedbackConstantsCompat
 import androidx.core.view.ViewCompat
 import com.dn0ne.player.R
+import com.dn0ne.player.app.presentation.ScrollToTopAndLocateButtons
 import com.dn0ne.player.app.domain.track.Playlist
 import com.dn0ne.player.app.domain.track.Track
 import com.dn0ne.player.app.domain.track.filterTracks
-import com.dn0ne.player.app.presentation.ScrollToTopAndLocateButtons
 import com.dn0ne.player.app.presentation.components.topbar.LazyColumnWithCollapsibleTopBar
 import com.dn0ne.player.app.presentation.components.trackinfo.SearchField
 import sh.calvin.reorderable.ReorderableItem
@@ -68,6 +68,7 @@ fun Queue(
     listState: LazyListState ,
     playlist: Playlist?,
     currentTrack: Track?,
+    canShowJumpButtons: Boolean,
     onRemoveFromQueueClick: (index: Int) -> Unit,
     onReorderingQueue: (from: Int, to: Int) -> Unit,
     onTrackClick: (Track, Playlist) -> Unit,
@@ -323,47 +324,40 @@ fun Queue(
         }
 
         val isScrolledEnough by remember {
-            derivedStateOf {
-                listState.firstVisibleItemIndex >= 5
-            }
+            derivedStateOf { listState.firstVisibleItemIndex >= 5 }
         }
         val shouldShowLocateButton by remember(currentTrack, playlist) {
             derivedStateOf {
                 val index = playlist?.trackList?.indexOf(currentTrack) ?: -1
-                currentTrack != null &&
-                        index >= 0 &&
-                        listState.layoutInfo.visibleItemsInfo.fastFirstOrNull {
-                            it.index == index
-                        } == null
+                currentTrack != null && index >= 0 &&
+                        listState.layoutInfo.visibleItemsInfo.fastFirstOrNull { it.index == index } == null
             }
         }
 
-        ScrollToTopAndLocateButtons(
-            showScrollToTopButton = isScrolledEnough,
-            onScrollToTopClick = remember {
-                {
-                    listState.scrollToItem(5)
-                    listState.animateScrollToItem(0)
-                }
-            },
-            showLocateButton = shouldShowLocateButton,
-            onLocateClick = remember(currentTrack, playlist) {
-                {
-                    val currentTrackIndex = playlist?.trackList?.indexOf(currentTrack)
-                    currentTrackIndex?.let {
-                        val preAnimateItemIndex = if (
-                            listState.firstVisibleItemIndex < currentTrackIndex
-                        ) {
-                            (currentTrackIndex - 5).coerceAtLeast(0)
-                        } else currentTrackIndex + 5
-                        listState.scrollToItem(preAnimateItemIndex)
-                        listState.animateScrollToItem(currentTrackIndex)
+        if (canShowJumpButtons) {
+            ScrollToTopAndLocateButtons(
+                showScrollToTopButton = isScrolledEnough,
+                onScrollToTopClick = remember {
+                    {
+                        listState.scrollToItem(5)
+                        listState.animateScrollToItem(0)
                     }
-                }
-            },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(bottom = 8.dp)
-        )
+                },
+                showLocateButton = shouldShowLocateButton,
+                onLocateClick = remember(currentTrack, playlist) {
+                    {
+                        val currentTrackIndex = playlist?.trackList?.indexOf(currentTrack)
+                        currentTrackIndex?.let {
+                            val preAnimateItemIndex = if (listState.firstVisibleItemIndex < currentTrackIndex) {
+                                (currentTrackIndex - 5).coerceAtLeast(0)
+                            } else currentTrackIndex + 5
+                            listState.scrollToItem(preAnimateItemIndex)
+                            listState.animateScrollToItem(currentTrackIndex)
+                        }
+                    }
+                },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(bottom = 8.dp),
+            )
+        }
     }
 }

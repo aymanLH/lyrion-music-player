@@ -10,6 +10,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import com.dn0ne.player.EqualizerController
 import com.dn0ne.player.R
 import com.dn0ne.player.app.data.LyricsReader
@@ -142,6 +143,23 @@ class PlayerViewModel(
         return sortedTracks
     }
 
+    fun onTracksDeleted(tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        viewModelScope.launch {
+            val deletedUris = tracks.mapTo(mutableSetOf()) { it.uri }
+            playlists.value.forEach { playlist ->
+                val remainingTracks = playlist.trackList.filterNot { it.uri in deletedUris }
+                if (remainingTracks.size != playlist.trackList.size) {
+                    playlistRepository.updatePlaylistTrackList(playlist, remainingTracks)
+                }
+            }
+            _selectedPlaylist.update { selected ->
+                selected?.copy(trackList = selected.trackList.filterNot { it.uri in deletedUris })
+            }
+            refreshTracksForHistory()
+        }
+    }
+
     val albumPlaylists = _trackList.map {
         it.groupBy { it.album }.entries.map {
             Playlist(
@@ -253,11 +271,16 @@ class PlayerViewModel(
 
     private val _pendingTrackUris = Channel<Uri>()
     private var lyricsFetchAllJob: Job? = null
+    private val newTrackLyricsQueue = Channel<Track>(Channel.UNLIMITED)
+    private val queuedAutomaticLyricsUris = mutableSetOf<String>()
+    private val automaticLyricsQueueLock = Any()
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
             while (true) {
                 val tracks = trackRepository.getTracks()
+                val knownTrackUris = _trackList.value.asSequence().map { it.uri }.toHashSet()
+                val newlyAddedTracks = tracks.filter { it.uri !in knownTrackUris }
 
                 if (_trackList.value.size != tracks.size || !_trackList.value.containsAll(tracks)) {
                     _trackList.update {
@@ -281,8 +304,54 @@ class PlayerViewModel(
                         }
                     }
 
+                    newlyAddedTracks.forEach { track ->
+                        val shouldQueue = synchronized(automaticLyricsQueueLock) {
+                            queuedAutomaticLyricsUris.add(track.uri.toString())
+                        }
+                        if (shouldQueue) newTrackLyricsQueue.trySend(track)
+                    }
+
                 }
                 delay(5000L)
+            }
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            var hasMadeRequest = false
+            for (track in newTrackLyricsQueue) {
+                try {
+                    if (track.title.isNullOrBlank() || track.artist.isNullOrBlank()) continue
+                    if (lyricsRepository.getLyricsByUri(track.uri.toString()) != null) continue
+                    if (hasMadeRequest) delay(300L)
+                    hasMadeRequest = true
+
+                    when (val result = lyricsProvider.getLyrics(track)) {
+                        is Result.Success -> {
+                            lyricsRepository.insertLyrics(result.data)
+                            if (_playbackState.value.currentTrack?.uri == track.uri) {
+                                _playbackState.update {
+                                    it.copy(lyrics = result.data, isLoadingLyrics = false)
+                                }
+                            }
+                        }
+                        is Result.Error -> {
+                            if (result.error != DataError.Network.NotFound &&
+                                result.error != DataError.Network.BadRequest &&
+                                result.error != DataError.Network.ParseError
+                            ) {
+                                Log.w(TAG, "Automatic lyrics lookup failed for ${track.uri}: ${result.error}")
+                            }
+                        }
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (exception: Exception) {
+                    Log.w(TAG, "Automatic lyrics lookup failed for ${track.uri}", exception)
+                } finally {
+                    synchronized(automaticLyricsQueueLock) {
+                        queuedAutomaticLyricsUris.remove(track.uri.toString())
+                    }
+                }
             }
         }
 
@@ -306,6 +375,7 @@ class PlayerViewModel(
                     it.copy(
                         playlist = playlist,
                         currentTrack = track,
+                        currentMediaItemIndex = index,
                         isPlaying = player!!.isPlaying,
                         playWhenReady = player!!.playWhenReady,
                         position = player!!.currentPosition
@@ -360,6 +430,7 @@ class PlayerViewModel(
                                 currentTrack = it.playlist?.trackList?.fastFirstOrNull {
                                     it.mediaItem == mediaItem
                                 }.also { savedPlayerState.track = it },
+                                currentMediaItemIndex = player?.currentMediaItemIndex ?: -1,
                                 position = 0L
                             )
                         }
@@ -370,6 +441,18 @@ class PlayerViewModel(
 
                         positionUpdateJob?.cancel()
                         positionUpdateJob = startPositionUpdate()
+                    }
+
+                    override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                        val currentIndex = player?.currentMediaItemIndex ?: -1
+                        _playbackState.update { state ->
+                            state.copy(
+                                currentMediaItemIndex = currentIndex,
+                                currentTrack = state.playlist?.trackList?.firstOrNull {
+                                    it.mediaItem == player?.currentMediaItem
+                                } ?: state.currentTrack
+                            )
+                        }
                     }
                 }
             )
@@ -482,6 +565,14 @@ class PlayerViewModel(
                         it.copy(
                             position = event.position
                         )
+                    }
+                }
+            }
+
+            is OnSeekToQueueIndex -> {
+                player?.let { activePlayer ->
+                    if (event.index in 0 until activePlayer.mediaItemCount) {
+                        activePlayer.seekTo(event.index, 0L)
                     }
                 }
             }
@@ -1720,5 +1811,9 @@ class PlayerViewModel(
      */
     private fun <T> List<T>.nextAfterOrNull(index: Int): T? {
         return getOrNull((index + 1) % size)
+    }
+
+    private companion object {
+        const val TAG = "PlayerViewModel"
     }
 }

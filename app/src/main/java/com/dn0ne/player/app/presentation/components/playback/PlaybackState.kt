@@ -8,6 +8,7 @@ import com.dn0ne.player.app.domain.track.Track
 data class PlaybackState(
     val playlist: Playlist? = null,
     val currentTrack: Track? = null,
+    val currentMediaItemIndex: Int = -1,
     val lyrics: Lyrics? = null,
     val isLoadingLyrics: Boolean = false,
     val isPlaying: Boolean = false,

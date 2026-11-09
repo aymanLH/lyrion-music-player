@@ -3,13 +3,13 @@ package com.dn0ne.player.app.presentation.components.playback
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.calculateTargetValue
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -21,6 +21,11 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerSnapDistance
+import androidx.compose.foundation.pager.PagerDefaults
+import androidx.compose.foundation.pager.PagerState
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
@@ -44,6 +49,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -64,13 +71,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ShapeDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -81,6 +93,13 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.IntSize
+import android.util.Log
+import coil3.SingletonImageLoader
+import coil3.request.ImageRequest
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -104,6 +123,7 @@ import kotlin.math.absoluteValue
 @Composable
 fun PlayerSheet(
     playbackStateFlow: StateFlow<PlaybackState>,
+    canShowJumpButtons: Boolean,
     onPlayerExpandedChange: (Boolean) -> Unit,
     onLyricsSheetExpandedChange: (Boolean) -> Unit,
     onPlayClick: () -> Unit,
@@ -113,7 +133,8 @@ fun PlayerSheet(
     onSeekTo: (Long) -> Unit,
     onReset: () -> Unit,
     onPlaybackModeClick: () -> Unit,
-    onCoverArtLoaded: (ImageBitmap?) -> Unit,
+    onCoverArtLoaded: (String, ImageBitmap?) -> Unit,
+    onSeekToQueueIndex: (Int) -> Unit,
     onPlayNextClick: () -> Unit,
     onAddToQueueClick: () -> Unit,
     onAddToPlaylistClick: () -> Unit,
@@ -243,6 +264,13 @@ fun PlayerSheet(
             )
 
     ) { state ->
+        DisposableEffect(state) {
+            val layout = if (state) "expanded" else "compact"
+            Log.d("YT_DEBUG", "PlayerSheet layout enter=$layout currentIndex=${playbackState.currentMediaItemIndex}")
+            onDispose {
+                Log.d("YT_DEBUG", "PlayerSheet layout exit=$layout")
+            }
+        }
         when (state) {
             false -> {
                 BottomPlayer(
@@ -259,7 +287,9 @@ fun PlayerSheet(
                     onPlayClick = onPlayClick,
                     onPauseClick = onPauseClick,
                     onSeekToNextClick = onSeekToNextClick,
-                    onCoverArtLoaded = onCoverArtLoaded
+                    onSeekToPreviousClick = onSeekToPreviousClick,
+                    onCoverArtLoaded = onCoverArtLoaded,
+                    onSeekToQueueIndex = onSeekToQueueIndex
                 )
             }
 
@@ -274,6 +304,7 @@ fun PlayerSheet(
 
                 ExpandedPlayer(
                     playbackStateFlow = playbackStateFlow,
+                    canShowJumpButtons = canShowJumpButtons,
                     onSeekTo = onSeekTo,
                     onPauseClick = onPauseClick,
                     onPlayClick = onPlayClick,
@@ -288,6 +319,7 @@ fun PlayerSheet(
                     },
                     onPlaybackModeClick = onPlaybackModeClick,
                     onCoverArtLoaded = onCoverArtLoaded,
+                    onSeekToQueueIndex = onSeekToQueueIndex,
                     onPlayNextClick = onPlayNextClick,
                     onAddToQueueClick = onAddToQueueClick,
                     onAddToPlaylistClick = onAddToPlaylistClick,
@@ -349,7 +381,9 @@ fun BottomPlayer(
     onPlayClick: () -> Unit,
     onPauseClick: () -> Unit,
     onSeekToNextClick: () -> Unit,
-    onCoverArtLoaded: (ImageBitmap?) -> Unit,
+    onSeekToPreviousClick: () -> Unit,
+    onCoverArtLoaded: (String, ImageBitmap?) -> Unit,
+    onSeekToQueueIndex: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     // Let the artwork follow the floating bar height so a taller bar does not
@@ -418,28 +452,15 @@ fun BottomPlayer(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            AnimatedContent(
-                targetState = currentTrack,
-                transitionSpec = {
-                    fadeIn() + slideInHorizontally(
-                        initialOffsetX = { it / 5 }
-                    ) togetherWith fadeOut() + slideOutHorizontally(
-                        targetOffsetX = { -it / 5 }
-                    )
-                },
-                label = "bottom-player-track-change-animation"
-            ) { currentTrack ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth(0.7f)
-                ) {
-                    CoverArt(
-                        uri = currentTrack.coverArtUri,
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(0.7f)
+            ) {
+                    PlayerCoverPager(
+                        playbackState = playbackState,
                         onCoverArtLoaded = onCoverArtLoaded,
-                        modifier = Modifier
-                            .size(coverArtSize)
-                            .clip(ShapeDefaults.Small)
+                        onSeekToQueueIndex = onSeekToQueueIndex,
+                        modifier = Modifier.size(coverArtSize).clip(ShapeDefaults.Small)
                     )
 
                     Spacer(modifier = Modifier.width(16.dp))
@@ -461,7 +482,6 @@ fun BottomPlayer(
                             modifier = Modifier.basicMarquee()
                         )
                     }
-                }
             }
 
             Row(
@@ -517,6 +537,7 @@ fun BottomPlayer(
 @Composable
 fun ExpandedPlayer(
     playbackStateFlow: StateFlow<PlaybackState>,
+    canShowJumpButtons: Boolean,
     onPlayClick: () -> Unit,
     onPauseClick: () -> Unit,
     onSeekToNextClick: () -> Unit,
@@ -524,7 +545,8 @@ fun ExpandedPlayer(
     onSeekTo: (Long) -> Unit,
     onHideClick: () -> Unit,
     onPlaybackModeClick: () -> Unit,
-    onCoverArtLoaded: (ImageBitmap?) -> Unit,
+    onCoverArtLoaded: (String, ImageBitmap?) -> Unit,
+    onSeekToQueueIndex: (Int) -> Unit,
     onPlayNextClick: () -> Unit,
     onAddToQueueClick: () -> Unit,
     onAddToPlaylistClick: () -> Unit,
@@ -680,18 +702,12 @@ fun ExpandedPlayer(
                         }
                     }
 
-                    AnimatedContent(
-                        targetState = currentTrack,
-                        label = "cover-art-animation"
-                    ) { track ->
-                        CoverArt(
-                            uri = track.coverArtUri,
-                            onCoverArtLoaded = onCoverArtLoaded,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(ShapeDefaults.Large)
-                        )
-                    }
+                    PlayerCoverPager(
+                        playbackState = playbackState,
+                        onCoverArtLoaded = onCoverArtLoaded,
+                        onSeekToQueueIndex = onSeekToQueueIndex,
+                        modifier = Modifier.fillMaxWidth().aspectRatio(1f).clip(ShapeDefaults.Large)
+                    )
 
                     Spacer(modifier = Modifier.height(28.dp))
 
@@ -754,20 +770,17 @@ fun ExpandedPlayer(
                             playbackState.currentTrack!!
                         }
                     }
-                    AnimatedContent(
-                        targetState = currentTrack,
-                        label = "cover-art-animation"
-                    ) { track ->
-                        CoverArt(
-                            uri = track.coverArtUri,
-                            onCoverArtLoaded = onCoverArtLoaded,
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(start = 28.dp)
-                                .padding(vertical = 28.dp)
-                                .clip(ShapeDefaults.ExtraLarge)
-                        )
-                    }
+                    PlayerCoverPager(
+                        playbackState = playbackState,
+                        onCoverArtLoaded = onCoverArtLoaded,
+                        onSeekToQueueIndex = onSeekToQueueIndex,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .padding(start = 28.dp)
+                            .padding(vertical = 28.dp)
+                            .clip(ShapeDefaults.ExtraLarge)
+                    )
 
                     Box(
                         modifier = Modifier
@@ -974,6 +987,7 @@ fun ExpandedPlayer(
                 listState = listState,
                 playlist = playlist,
                 currentTrack = currentTrack,
+                canShowJumpButtons = canShowJumpButtons,
                 onRemoveFromQueueClick = onRemoveFromQueueClick,
                 onReorderingQueue = onReorderingQueue,
                 onTrackClick = onTrackClick,
@@ -990,6 +1004,166 @@ fun ExpandedPlayer(
                 }
             )
         }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun PlayerCoverPager(
+    playbackState: PlaybackState,
+    onCoverArtLoaded: (String, ImageBitmap?) -> Unit,
+    onSeekToQueueIndex: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val queue = playbackState.playlist?.trackList.orEmpty()
+    if (queue.isEmpty()) return
+
+    val queueKeys = remember(queue) {
+        val occurrences = mutableMapOf<String, Int>()
+        queue.map { track ->
+            val id = track.uri.toString()
+            val occurrence = occurrences.getOrDefault(id, 0)
+            occurrences[id] = occurrence + 1
+            "$id#$occurrence"
+        }
+    }
+    val queueSignature = remember(queueKeys) { queueKeys.joinToString("\u001f") }
+    val targetIndex = playbackState.currentMediaItemIndex
+        .takeIf { it in queue.indices }
+        ?: queue.indexOfFirst { it.uri == playbackState.currentTrack?.uri }
+            .takeIf { it >= 0 }
+        ?: 0
+    val pagerState = rememberPagerState(
+        initialPage = targetIndex,
+        pageCount = { queue.size }
+    )
+    val direction = LocalLayoutDirection.current
+    val context = LocalContext.current
+    val imageLoader = remember(context) { SingletonImageLoader.get(context) }
+    val bitmaps = remember { mutableStateMapOf<String, ImageBitmap?>() }
+    var measuredSize by remember { mutableStateOf(IntSize.Zero) }
+    var userDragActive by remember { mutableStateOf(false) }
+    var dragQueueSignature by remember { mutableStateOf<String?>(null) }
+    var pendingUserTarget by remember { mutableStateOf<Pair<String, Int>?>(null) }
+    val latestQueueSignature by rememberUpdatedState(queueSignature)
+    val latestQueue by rememberUpdatedState(queue)
+    val latestCurrentIndex by rememberUpdatedState(playbackState.currentMediaItemIndex)
+    val callback by rememberUpdatedState(onSeekToQueueIndex)
+    val coverCallback by rememberUpdatedState(onCoverArtLoaded)
+
+    DisposableEffect(pagerState) {
+        val instance = System.identityHashCode(pagerState)
+        Log.d("YT_DEBUG", "CoverPager mounted instance=$instance page=${pagerState.settledPage} target=$targetIndex count=${queue.size}")
+        onDispose { Log.d("YT_DEBUG", "CoverPager disposed instance=$instance page=${pagerState.settledPage}") }
+    }
+
+    LaunchedEffect(queueSignature, playbackState.playbackMode) {
+        Log.d("YT_DEBUG", "CoverPager queue/mode changed mode=${playbackState.playbackMode} target=$targetIndex page=${pagerState.settledPage} keys=$queueSignature")
+    }
+
+    LaunchedEffect(pagerState) {
+        pagerState.interactionSource.interactions.collect { interaction ->
+            when (interaction) {
+                is DragInteraction.Start -> {
+                    userDragActive = true
+                    dragQueueSignature = latestQueueSignature
+                    Log.d("YT_DEBUG", "CoverPager drag start page=${pagerState.settledPage} queue=$queueSignature")
+                }
+                is DragInteraction.Stop -> {
+                    val dragSignature = dragQueueSignature
+                    snapshotFlow { pagerState.isScrollInProgress }.first { !it }
+                    val settled = pagerState.settledPage
+                    userDragActive = false
+                    dragQueueSignature = null
+                    if (dragSignature == latestQueueSignature && settled in latestQueue.indices && settled != latestCurrentIndex) {
+                        pendingUserTarget = latestQueueSignature to settled
+                        Log.d("YT_DEBUG", "CoverPager user settle page=$settled track=${latestQueue[settled].uri} queue=$latestQueueSignature")
+                        callback(settled)
+                    } else {
+                        Log.d("YT_DEBUG", "CoverPager user settle ignored page=$settled current=$latestCurrentIndex queueChanged=${dragSignature != latestQueueSignature}")
+                    }
+                }
+                is DragInteraction.Cancel -> {
+                    userDragActive = false
+                    dragQueueSignature = null
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(targetIndex, queueSignature, userDragActive, pendingUserTarget) {
+        if (userDragActive) return@LaunchedEffect
+        val pending = pendingUserTarget
+        if (pending != null) {
+            if (pending.first != queueSignature) pendingUserTarget = null
+            else if (targetIndex == pending.second) pendingUserTarget = null
+            else return@LaunchedEffect
+        }
+        if (targetIndex !in queue.indices || pagerState.settledPage == targetIndex) return@LaunchedEffect
+        val from = pagerState.settledPage
+        val trackId = queue[targetIndex].uri
+        if (kotlin.math.abs(targetIndex - from) == 1) {
+            Log.d("YT_DEBUG", "CoverPager external adjacent from=$from to=$targetIndex track=$trackId")
+            pagerState.animateScrollToPage(
+                targetIndex,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            )
+        } else {
+            Log.d("YT_DEBUG", "CoverPager external jump from=$from to=$targetIndex track=$trackId")
+            pagerState.scrollToPage(targetIndex)
+        }
+    }
+
+    val settledTrackId = queue.getOrNull(pagerState.settledPage)?.uri?.toString()
+    LaunchedEffect(settledTrackId, pagerState.isScrollInProgress) {
+        if (!pagerState.isScrollInProgress) {
+            settledTrackId?.let { id ->
+                if (bitmaps.containsKey(id)) coverCallback(id, bitmaps[id])
+            }
+        }
+    }
+
+    LaunchedEffect(pagerState.currentPage, measuredSize, queueSignature) {
+        if (measuredSize.width <= 0 || measuredSize.height <= 0) return@LaunchedEffect
+        listOf(pagerState.currentPage - 1, pagerState.currentPage + 1)
+            .mapNotNull(queue::getOrNull)
+            .forEach { track ->
+                imageLoader.enqueue(
+                    ImageRequest.Builder(context)
+                        .data(track.coverArtUri)
+                        .size(measuredSize.width, measuredSize.height)
+                        .build()
+                )
+            }
+    }
+
+    val flingBehavior = PagerDefaults.flingBehavior(
+        state = pagerState,
+        pagerSnapDistance = PagerSnapDistance.atMost(1)
+    )
+    HorizontalPager(
+        state = pagerState,
+        modifier = modifier.onSizeChanged { measuredSize = it },
+        beyondViewportPageCount = 1,
+        flingBehavior = flingBehavior,
+        reverseLayout = direction == LayoutDirection.Rtl,
+        key = { page -> queueKeys[page] }
+    ) { page ->
+        val track = queue.getOrNull(page) ?: return@HorizontalPager
+        val trackId = track.uri.toString()
+        CoverArt(
+            uri = track.coverArtUri,
+            onCoverArtLoaded = { bitmap ->
+                bitmaps[trackId] = bitmap
+                if (page == pagerState.settledPage && !pagerState.isScrollInProgress) {
+                    coverCallback(trackId, bitmap)
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
     }
 }
 

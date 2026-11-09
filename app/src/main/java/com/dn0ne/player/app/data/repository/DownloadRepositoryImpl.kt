@@ -2,7 +2,6 @@ package com.dn0ne.player.app.data.repository
 
 import android.content.Context
 import android.util.Log
-import com.dn0ne.player.DownloadService
 import com.dn0ne.player.R
 import com.dn0ne.player.app.data.download.DownloadErrorClassifier
 import com.dn0ne.player.app.data.download.DownloadErrorKind
@@ -33,8 +32,10 @@ import com.dn0ne.player.app.presentation.components.snackbar.SnackbarEvent
 import com.dn0ne.player.core.data.Settings
 import com.yausername.youtubedl_android.YoutubeDL
 import java.io.File
+import java.security.MessageDigest
 import java.net.URL
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -49,6 +50,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.decodeFromString
@@ -67,7 +69,7 @@ import kotlinx.serialization.json.Json
  * Contract:
  *  - at most [MAX_CONCURRENCY] tasks fetch info or download at the same time,
  *  - `Idle -> FetchingInfo -> ReadyWithInfo -> Running -> Completed | Canceled | Error`,
- *  - restored unfinished tasks become `Canceled` and are never auto-started,
+ *  - restored unfinished tasks resume from the last safe queue state,
  *  - a cancel must never be overwritten by a late success/error callback.
  */
 class DownloadRepositoryImpl(
@@ -82,7 +84,11 @@ class DownloadRepositoryImpl(
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val scheduleMutex = Mutex()
+    private val recoveryMutex = Mutex()
+    private val queueStateLock = Any()
+    private val recoveryReady = CompletableDeferred<Unit>()
     private val dispatchTrigger = Channel<Unit>(Channel.CONFLATED)
+    private val pendingResumptions = mutableMapOf<DownloadTask, PendingResume>()
 
     private val _tasks = MutableStateFlow<Map<DownloadTask, DownloadTaskState>>(emptyMap())
     override val tasks: StateFlow<Map<DownloadTask, DownloadTaskState>> = _tasks.asStateFlow()
@@ -99,7 +105,13 @@ class DownloadRepositoryImpl(
     init {
         scope.launch {
             // Read before writing: restore first, then start persisting changes.
-            restoreFromBackup()
+            try {
+                restoreFromBackup()
+            } catch (exception: Exception) {
+                Log.e(TAG, "Failed to restore download queue", exception)
+            } finally {
+                recoveryReady.complete(Unit)
+            }
 
             _tasks
                 .map { map ->
@@ -120,25 +132,6 @@ class DownloadRepositoryImpl(
                     .onFailure { Log.e(TAG, "Failed to schedule downloads", it) }
             }
         }
-
-        // Bring up the dataSync foreground service whenever work becomes active.
-        // Restored tasks are Canceled, so nothing starts at app launch.
-        scope.launch {
-            _tasks
-                .map { map ->
-                    map.values.any { state ->
-                        state.downloadState is DownloadState.Running ||
-                                state.downloadState is DownloadState.FetchingInfo
-                    }
-                }
-                .distinctUntilChanged()
-                .collect { isActive ->
-                    if (isActive) {
-                        runCatching { DownloadService.start(appContext) }
-                            .onFailure { Log.e(TAG, "Failed to start download service", it) }
-                    }
-                }
-        }
     }
 
     // region Queue API
@@ -154,14 +147,17 @@ class DownloadRepositoryImpl(
     }
 
     override fun enqueue(task: DownloadTask, state: DownloadTaskState) {
-        _tasks.update { map ->
-            val existing = map[task]?.downloadState
-            val canReplace = existing == null ||
-                    existing is DownloadState.Completed ||
-                    existing is DownloadState.Canceled ||
-                    existing is DownloadState.Error
+        synchronized(queueStateLock) {
+            pendingResumptions.remove(task)
+            _tasks.update { map ->
+                val existing = map[task]?.downloadState
+                val canReplace = existing == null ||
+                        existing is DownloadState.Completed ||
+                        existing is DownloadState.Canceled ||
+                        existing is DownloadState.Error
 
-            if (canReplace) map + (task to state) else map
+                if (canReplace) map + (task to state) else map
+            }
         }
         triggerDispatch()
     }
@@ -175,11 +171,27 @@ class DownloadRepositoryImpl(
     }
 
     override fun enqueueSearchItem(item: YoutubeSearchItem) {
-        enqueue(DownloadTaskFactory.createForSearchItem(item, currentPreferences()))
+        enqueueSearchItem(item, serviceStartSucceeded = true)
+    }
+
+    override fun enqueueSearchItem(item: YoutubeSearchItem, serviceStartSucceeded: Boolean) {
+        val taskWithState = DownloadTaskFactory.createForSearchItem(item, currentPreferences())
+        enqueue(
+            taskWithState.task,
+            if (serviceStartSucceeded) taskWithState.state else taskWithState.state.asCanceledForServiceFailure(),
+        )
     }
 
     override fun enqueueUrl(url: String) {
-        enqueue(DownloadTaskFactory.createForUrl(url, currentPreferences()))
+        enqueueUrl(url, serviceStartSucceeded = true)
+    }
+
+    override fun enqueueUrl(url: String, serviceStartSucceeded: Boolean) {
+        val taskWithState = DownloadTaskFactory.createForUrl(url, currentPreferences())
+        enqueue(
+            taskWithState.task,
+            if (serviceStartSucceeded) taskWithState.state else taskWithState.state.asCanceledForServiceFailure(),
+        )
     }
 
     override fun enqueuePlaylist(
@@ -187,42 +199,146 @@ class DownloadRepositoryImpl(
         selectedIndices: List<Int>,
         playlistResult: PlaylistResult,
     ): List<DownloadTask> {
+        return enqueuePlaylist(playlistUrl, selectedIndices, playlistResult, serviceStartSucceeded = true)
+    }
+
+    override fun enqueuePlaylist(
+        playlistUrl: String,
+        selectedIndices: List<Int>,
+        playlistResult: PlaylistResult,
+        serviceStartSucceeded: Boolean,
+    ): List<DownloadTask> {
         val taskWithStates = DownloadTaskFactory.createWithPlaylistResult(
             playlistUrl = playlistUrl,
             indexList = selectedIndices,
             playlistResult = playlistResult,
             preferences = currentPreferences(),
         )
-        enqueueAll(taskWithStates)
+        if (serviceStartSucceeded) {
+            enqueueAll(taskWithStates)
+        } else {
+            enqueueAll(taskWithStates.map {
+                it.copy(state = it.state.asCanceledForServiceFailure())
+            })
+        }
         return taskWithStates.map { it.task }
     }
 
-    override fun cancel(task: DownloadTask): Boolean = task.cancelImpl()
+    override fun cancel(task: DownloadTask): Boolean = synchronized(queueStateLock) {
+        pendingResumptions.remove(task)
+        task.cancelImpl()
+    }
 
     override fun cancel(taskId: String): Boolean =
         _tasks.value.keys.firstOrNull { it.id == taskId }?.let { cancel(it) } ?: false
 
     override fun restart(task: DownloadTask) {
+        restart(task, serviceStartSucceeded = true)
+    }
+
+    override fun restart(task: DownloadTask, serviceStartSucceeded: Boolean) {
+        if (!serviceStartSucceeded) {
+            synchronized(queueStateLock) { pendingResumptions.remove(task) }
+            return
+        }
+        synchronized(queueStateLock) { pendingResumptions.remove(task) }
         task.restartImpl()
     }
 
     override fun remove(task: DownloadTask): Boolean {
         // Note: the caller is responsible for stopping the task before removing it.
         cancel(task)
-        val removed = _tasks.value.containsKey(task)
-        if (removed) {
-            _tasks.update { it - task }
+        val removed = synchronized(queueStateLock) {
+            pendingResumptions.remove(task)
+            val exists = _tasks.value.containsKey(task)
+            if (exists) _tasks.update { it - task }
+            exists
         }
         triggerDispatch()
         return removed
     }
 
-    override fun countRunning(): Int = _tasks.value.values.count { state ->
-        state.downloadState is DownloadState.Running ||
-                state.downloadState is DownloadState.FetchingInfo
-    }
+    override fun countRunning(): Int = synchronized(queueStateLock) { countRunningLocked() }
 
     override fun hasRunningTasks(): Boolean = countRunning() > 0
+
+    override fun hasUnfinishedTasks(): Boolean = synchronized(queueStateLock) {
+        !recoveryReady.isCompleted || pendingResumptions.isNotEmpty() || hasUnfinishedTasksLocked()
+    }
+
+    override fun runIfQueueIdle(stopAction: () -> Unit): Boolean = synchronized(queueStateLock) {
+        if (hasUnfinishedTasksLocked() || pendingResumptions.isNotEmpty()) {
+            return@synchronized false
+        }
+        stopAction()
+        true
+    }
+
+    override suspend fun resumeInterruptedTasks(startServiceFromUi: () -> Boolean): Int {
+        recoveryReady.await()
+        return recoveryMutex.withLock {
+            val candidates = synchronized(queueStateLock) { pendingResumptions.toMap() }
+            if (candidates.isEmpty()) return@withLock 0
+
+            if (!startServiceFromUi()) {
+                synchronized(queueStateLock) {
+                    candidates.keys.forEach(pendingResumptions::remove)
+                }
+                Log.e(TAG, "Foreground service start failed; interrupted tasks remain canceled and resumable")
+                return@withLock 0
+            }
+
+            val resumedCount = synchronized(queueStateLock) {
+                val latest = _tasks.value.toMutableMap()
+                var resumed = 0
+                candidates.forEach { (task, pending) ->
+                    if (pendingResumptions[task] != pending) return@forEach
+                    val existing = latest[task] ?: run {
+                        pendingResumptions.remove(task)
+                        return@forEach
+                    }
+                    val placeholder = existing.downloadState as? DownloadState.Canceled
+                    if (placeholder?.action != pending.action) {
+                        pendingResumptions.remove(task)
+                        return@forEach
+                    }
+
+                    latest[task] = existing.copy(
+                        downloadState = pending.resumeState,
+                        autoResumeCount = existing.autoResumeCount + 1,
+                    )
+                    pendingResumptions.remove(task)
+                    resumed++
+                }
+                _tasks.value = latest
+                resumed
+            }
+
+            if (resumedCount > 0) {
+                if (!persistCurrentImmediately()) {
+                    synchronized(queueStateLock) {
+                        val latest = _tasks.value.toMutableMap()
+                        candidates.forEach { (task, pending) ->
+                            val state = latest[task] ?: return@forEach
+                            if (state.autoResumeCount > 0 && state.downloadState == pending.resumeState) {
+                                latest[task] = state.copy(
+                                    downloadState = DownloadState.Canceled(pending.action),
+                                    autoResumeCount = (state.autoResumeCount - 1).coerceAtLeast(0),
+                                )
+                            }
+                        }
+                        _tasks.value = latest
+                    }
+                    Log.e(TAG, "Could not persist auto-resume counters; interrupted tasks remain canceled")
+                    persistCurrent()
+                    return@withLock 0
+                }
+                Log.i(TAG, "Resuming $resumedCount interrupted download task(s) after foreground UI start")
+                triggerDispatch()
+            }
+            resumedCount
+        }
+    }
 
     override fun currentPreferences(): DownloadPreferences = DownloadPreferences(
         audioFormat = settings.downloadFormat.value,
@@ -231,6 +347,29 @@ class DownloadRepositoryImpl(
         embedThumbnail = settings.embedThumbnail.value,
         outputTemplate = DownloadRequestFactory.DEFAULT_OUTPUT_TEMPLATE,
     )
+
+    private fun countRunningLocked(): Int = _tasks.value.values.count { state ->
+        state.downloadState is DownloadState.Running ||
+                state.downloadState is DownloadState.FetchingInfo
+    }
+
+    private fun hasUnfinishedTasksLocked(): Boolean = _tasks.value.values.any { state ->
+        state.downloadState !is DownloadState.Completed &&
+                state.downloadState !is DownloadState.Canceled &&
+                state.downloadState !is DownloadState.Error
+    }
+
+    private fun DownloadTaskState.asCanceledForServiceFailure(): DownloadTaskState {
+        val (action, progress) = when (val state = downloadState) {
+            is DownloadState.FetchingInfo -> RestartableAction.FetchInfo to null
+            is DownloadState.Running -> RestartableAction.Download to state.progress
+            DownloadState.ReadyWithInfo -> RestartableAction.Download to null
+            is DownloadState.Canceled -> state.action to state.progress
+            is DownloadState.Error -> state.action to null
+            else -> RestartableAction.FetchInfo to null
+        }
+        return copy(downloadState = DownloadState.Canceled(action, progress))
+    }
 
     // endregion
 
@@ -329,11 +468,10 @@ class DownloadRepositoryImpl(
 
         val task = this
         val job = scope.launch(start = CoroutineStart.LAZY) {
-            val outputDir = downloadOutputDir()
-            outputDir.mkdirs()
             val startedAt = System.currentTimeMillis()
 
             try {
+                val outputDir = prepareTaskOutputDirectory(task)
                 val request = DownloadRequestFactory.build(
                     videoInfo = info,
                     taskUrl = task.url,
@@ -394,7 +532,7 @@ class DownloadRepositoryImpl(
                 }
 
                 // Publish into the shared library before reporting success.
-                val published = mediaStorePublisher.publish(file, info.title)
+                val published = mediaStorePublisher.publish(file, info.title, task.id)
                 if (task.isCanceledOrGone()) return@launch
 
                 val result = published.getOrElse { throwable ->
@@ -403,6 +541,9 @@ class DownloadRepositoryImpl(
                         action = RestartableAction.Download,
                     )
                     return@launch
+                }
+                if (outputDir.exists() && !outputDir.deleteRecursively()) {
+                    Log.w(TAG, "Could not remove completed staging directory $outputDir")
                 }
 
                 task.updateState { state ->
@@ -461,9 +602,11 @@ class DownloadRepositoryImpl(
     private inline fun DownloadTask.updateState(
         transform: (DownloadTaskState) -> DownloadTaskState,
     ) {
-        _tasks.update { map ->
-            val current = map[this] ?: return@update map
-            map + (this to transform(current))
+        synchronized(queueStateLock) {
+            _tasks.update { map ->
+                val current = map[this] ?: return@update map
+                map + (this to transform(current))
+            }
         }
     }
 
@@ -692,6 +835,31 @@ class DownloadRepositoryImpl(
     private fun downloadOutputDir(): File =
         appContext.getExternalFilesDir("downloads") ?: File(appContext.filesDir, "downloads")
 
+    private fun prepareTaskOutputDirectory(task: DownloadTask): File {
+        val root = downloadOutputDir()
+        if (!root.exists() && !root.mkdirs()) error("Could not create download staging directory")
+
+        // Remove legacy flat staging files from earlier releases. Current downloads each
+        // use a task-specific subdirectory, so concurrent tasks cannot erase one another.
+        root.listFiles()
+            ?.filter(File::isFile)
+            ?.forEach { legacyFile ->
+                if (!legacyFile.delete()) Log.w(TAG, "Could not remove legacy staging file $legacyFile")
+            }
+
+        val key = MessageDigest.getInstance("SHA-256")
+            .digest(task.id.toByteArray(Charsets.UTF_8))
+            .joinToString("") { byte -> "%02x".format(byte) }
+        val outputDir = File(root, "task_$key")
+        if (outputDir.exists() && !outputDir.deleteRecursively()) {
+            error("Could not clear interrupted staging directory")
+        }
+        if (!outputDir.mkdirs() && !outputDir.isDirectory) {
+            error("Could not create task staging directory")
+        }
+        return outputDir
+    }
+
     /**
      * Resolves the final file produced by yt-dlp.
      *
@@ -724,11 +892,27 @@ class DownloadRepositoryImpl(
             ?.maxByOrNull { it.lastModified() }
     }
 
-    private fun persist(map: Map<DownloadTask, DownloadTaskState>) {
+    private fun persist(@Suppress("UNUSED_PARAMETER") map: Map<DownloadTask, DownloadTaskState>) {
+        persistCurrent()
+    }
+
+    private fun persistCurrent() {
         runCatching {
-            val encoded = json.encodeToString<Map<DownloadTask, DownloadTaskState>>(map)
-            queuePreferences.edit().putString(QUEUE_KEY, encoded).apply()
+            synchronized(queueStateLock) {
+                val encoded = json.encodeToString<Map<DownloadTask, DownloadTaskState>>(_tasks.value)
+                queuePreferences.edit().putString(QUEUE_KEY, encoded).apply()
+            }
         }.onFailure { Log.e(TAG, "Failed to persist download queue", it) }
+    }
+
+    private suspend fun persistCurrentImmediately(): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            synchronized(queueStateLock) {
+                val encoded = json.encodeToString<Map<DownloadTask, DownloadTaskState>>(_tasks.value)
+                queuePreferences.edit().putString(QUEUE_KEY, encoded).commit()
+            }
+        }.onFailure { Log.e(TAG, "Failed to synchronously persist recovered queue", it) }
+            .getOrDefault(false)
     }
 
     private fun restoreFromBackup() {
@@ -739,30 +923,77 @@ class DownloadRepositoryImpl(
             .getOrNull()
             ?: return
 
+        val recoveredCandidates = mutableMapOf<DownloadTask, PendingResume>()
         val restored = decoded
             .filterValues { it.downloadState !is DownloadState.Completed }
-            .mapValues { (_, state) ->
-                val restoredState = when (val preState = state.downloadState) {
-                    is DownloadState.FetchingInfo,
-                    DownloadState.Idle,
-                        -> DownloadState.Canceled(RestartableAction.FetchInfo)
-
-                    is DownloadState.Running -> DownloadState.Canceled(
-                        action = RestartableAction.Download,
-                        progress = preState.progress,
+            .mapValues { (task, state) ->
+                val preState = state.downloadState
+                val recovery = when (preState) {
+                    is DownloadState.FetchingInfo -> RecoveryCandidate(
+                        resumeState = DownloadState.Idle,
+                        action = RestartableAction.FetchInfo,
                     )
 
-                    DownloadState.ReadyWithInfo -> DownloadState.Canceled(
-                        action = RestartableAction.Download,
-                    )
+                    is DownloadState.Running -> if (state.videoInfo != null) {
+                        RecoveryCandidate(
+                            resumeState = DownloadState.ReadyWithInfo,
+                            action = RestartableAction.Download,
+                        )
+                    } else {
+                        RecoveryCandidate(
+                            resumeState = DownloadState.Idle,
+                            action = RestartableAction.FetchInfo,
+                        )
+                    }
 
-                    else -> preState
+                    DownloadState.ReadyWithInfo -> if (state.videoInfo != null) {
+                        RecoveryCandidate(
+                            resumeState = DownloadState.ReadyWithInfo,
+                            action = RestartableAction.Download,
+                        )
+                    } else {
+                        RecoveryCandidate(
+                            resumeState = DownloadState.Idle,
+                            action = RestartableAction.FetchInfo,
+                        )
+                    }
+
+                    else -> null
                 }
-                state.copy(downloadState = restoredState)
+
+                if (recovery != null && state.autoResumeCount < MAX_AUTO_RESUMES) {
+                    recoveredCandidates[task] = PendingResume(recovery.resumeState, recovery.action)
+                    state.copy(
+                        downloadState = DownloadState.Canceled(recovery.action),
+                    )
+                } else if (recovery != null) {
+                    Log.w(
+                        "YT_DEBUG",
+                        "Auto-resume limit reached for task=${task.id}; leaving it canceled and manually resumable",
+                    )
+                    state.copy(downloadState = DownloadState.Canceled(recovery.action))
+                } else {
+                    when (preState) {
+                        // Queued-but-not-started work is not automatically resumed.
+                        DownloadState.Idle -> state.copy(
+                            downloadState = DownloadState.Canceled(RestartableAction.FetchInfo),
+                        )
+
+                        // Preserve user cancellation and terminal errors exactly.
+                        else -> state
+                    }
+                }
             }
 
-        // Restored tasks are never auto-started; the user has to restart them.
-        _tasks.value = restored
+        synchronized(queueStateLock) {
+            // An enqueue from the foreground UI can race the asynchronous backup read;
+            // current in-memory changes always win over the older snapshot.
+            pendingResumptions.putAll(recoveredCandidates.filterKeys { it !in _tasks.value })
+            _tasks.value = restored + _tasks.value
+        }
+        if (recoveredCandidates.isNotEmpty()) {
+            Log.i("YT_DEBUG", "Found ${recoveredCandidates.size} interrupted task(s), waiting for foreground UI to resume them")
+        }
     }
 
     // endregion
@@ -786,6 +1017,7 @@ class DownloadRepositoryImpl(
     }
 
     private companion object {
+        const val MAX_AUTO_RESUMES = 2
         const val MAX_THUMBNAIL_BYTES = 10 * 1024 * 1024
         const val TAG = "DownloadRepository"
         const val MAX_CONCURRENCY = 3
@@ -794,4 +1026,14 @@ class DownloadRepositoryImpl(
         const val PERSIST_DEBOUNCE_MILLIS = 750L
         const val FILE_LOOKUP_TOLERANCE_MILLIS = 2_000L
     }
+
+    private data class RecoveryCandidate(
+        val resumeState: DownloadState,
+        val action: RestartableAction,
+    )
+
+    private data class PendingResume(
+        val resumeState: DownloadState,
+        val action: RestartableAction,
+    )
 }
