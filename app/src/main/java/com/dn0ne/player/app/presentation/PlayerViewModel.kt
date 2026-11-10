@@ -287,13 +287,24 @@ class PlayerViewModel(
                         tracks.sortedBy(_trackSort.value, _trackSortOrder.value)
                     }
 
+                    val refreshedTracksByUri = _trackList.value.associateBy { it.uri }
+
                     if (_trackInfoSheetState.value.track != null) {
-                        _trackInfoSheetState.update {
-                            it.copy(
-                                track = _trackList.value.fastFirstOrNull { track -> it.track?.uri == track.uri }
+                        _trackInfoSheetState.update { state ->
+                            state.copy(
+                                track = state.track?.let { refreshedTracksByUri[it.uri] }
                             )
                         }
+                    }
 
+                    // Editing metadata changes the track object but keeps the same
+                    // URI. Only invalidate playback when the playing track actually
+                    // disappeared from the library (e.g. the file was deleted or moved).
+                    val stalePlaybackState = _playbackState.value
+                    val currentTrackStillExists = stalePlaybackState.currentTrack
+                        ?.let { refreshedTracksByUri.containsKey(it.uri) } == true
+
+                    if (stalePlaybackState.currentTrack != null && !currentTrackStillExists) {
                         _playbackState.update {
                             PlaybackState()
                         }
@@ -301,6 +312,19 @@ class PlayerViewModel(
                         withContext(Dispatchers.Main) {
                             player?.stop()
                             player?.clearMediaItems()
+                        }
+                    } else {
+                        _playbackState.update { state ->
+                            state.copy(
+                                playlist = state.playlist?.copy(
+                                    trackList = state.playlist.trackList.map { track ->
+                                        refreshedTracksByUri[track.uri] ?: track
+                                    }
+                                ),
+                                currentTrack = state.currentTrack?.let { track ->
+                                    refreshedTracksByUri[track.uri] ?: track
+                                }
+                            )
                         }
                     }
 
@@ -425,10 +449,11 @@ class PlayerViewModel(
                         mediaItem: MediaItem?,
                         reason: Int
                     ) {
+                        val mediaItemUri = mediaItem?.localConfiguration?.uri
                         _playbackState.update {
                             it.copy(
-                                currentTrack = it.playlist?.trackList?.fastFirstOrNull {
-                                    it.mediaItem == mediaItem
+                                currentTrack = it.playlist?.trackList?.fastFirstOrNull { track ->
+                                    track.uri == mediaItemUri || track.mediaItem == mediaItem
                                 }.also { savedPlayerState.track = it },
                                 currentMediaItemIndex = player?.currentMediaItemIndex ?: -1,
                                 position = 0L
@@ -1456,6 +1481,47 @@ class PlayerViewModel(
     fun playTrackFromUri(uri: Uri) {
         viewModelScope.launch {
             _pendingTrackUris.send(uri)
+        }
+    }
+
+    /**
+     * Writing metadata rewrites the playing file in place, which interrupts
+     * ExoPlayer. Recreate the current media source and restore the position so
+     * the track keeps playing after the edit.
+     */
+    fun resumeAfterMetadataChange(track: Track, position: Long) {
+        val player = player ?: run {
+            Log.w(TAG, "Resume after metadata change: player is null")
+            return
+        }
+
+        val state = _playbackState.value
+        val queueIndex = state.playlist?.trackList?.indexOfFirst { it.uri == track.uri } ?: -1
+        val currentIndex = player.currentMediaItemIndex
+        val index = if (player.currentMediaItem?.localConfiguration?.uri == track.uri) {
+            currentIndex
+        } else {
+            queueIndex
+        }
+
+        if (index < 0) {
+            Log.w(TAG, "Resume after metadata change: track is not in the queue")
+            return
+        }
+
+        val resumePosition = position.coerceAtLeast(0L)
+        player.replaceMediaItem(index, track.mediaItem)
+        player.prepare()
+        player.seekTo(index, resumePosition)
+        player.play()
+
+        _playbackState.update {
+            it.copy(
+                currentTrack = track,
+                currentMediaItemIndex = index,
+                position = resumePosition,
+                isPlaying = true
+            )
         }
     }
 

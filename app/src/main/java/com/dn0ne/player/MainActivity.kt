@@ -3,6 +3,7 @@ package com.dn0ne.player
 import android.Manifest
 import android.content.ComponentName
 import android.content.Intent
+import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.media.MediaScannerConnection
 import android.net.Uri
@@ -68,6 +69,10 @@ import org.koin.androidx.viewmodel.ext.android.getViewModel
 
 class MainActivity : ComponentActivity() {
 
+    // Invoked after a metadata write completes (also after the one-time
+    // MediaStore write permission is granted) so a playing track can resume.
+    private var resumeAfterMetadataWrite: (() -> Unit)? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         installSplashScreen()
@@ -132,6 +137,11 @@ class MainActivity : ComponentActivity() {
                         metadata = it.second,
                         onSecurityError = { println("SECURITY EXCEPTION OCCURRED") }
                     )
+
+                    if (result is Result.Success) {
+                        resumeAfterMetadataWrite?.invoke()
+                    }
+                    resumeAfterMetadataWrite = null
 
                     checkMetadataWriteResult(result)
                 }
@@ -357,8 +367,8 @@ class MainActivity : ComponentActivity() {
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                                     trackToMetadataPair = track to metadata
 
-                                    val metadataWriter: MetadataWriter = get()
-                                    val result = metadataWriter.writeMetadata(
+                                    val result = writeMetadataAndResume(
+                                        viewModel = viewModel,
                                         track = track,
                                         metadata = metadata,
                                         onSecurityError = { intentSender ->
@@ -388,8 +398,8 @@ class MainActivity : ComponentActivity() {
                                         return@ObserveAsEvents
                                     }
 
-                                    val metadataWriter: MetadataWriter = get()
-                                    val result = metadataWriter.writeMetadata(
+                                    val result = writeMetadataAndResume(
+                                        viewModel = viewModel,
                                         track = track,
                                         metadata = metadata,
                                         onSecurityError = {}
@@ -506,6 +516,44 @@ class MainActivity : ComponentActivity() {
 
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         startActivity(intent)
+    }
+
+    /**
+     * Writes metadata and, when the edited track is the one currently playing,
+     * restarts it at the same position after the file has been rewritten.
+     * Writing replaces the file contents, which makes ExoPlayer stop or error.
+     */
+    private fun writeMetadataAndResume(
+        viewModel: PlayerViewModel,
+        track: Track,
+        metadata: Metadata,
+        onSecurityError: (IntentSender) -> Unit
+    ): Result<Unit, DataError.Local> {
+        val player = viewModel.player
+        val playbackState = viewModel.playbackState.value
+        val liveTrackUri = player?.currentMediaItem?.localConfiguration?.uri
+        val isPlayingTrack = liveTrackUri == track.uri ||
+                (liveTrackUri == null && playbackState.currentTrack?.uri == track.uri)
+        val wasPlaying = player?.isPlaying == true || player?.playWhenReady == true ||
+                playbackState.isPlaying || playbackState.playWhenReady
+        val position = player?.currentPosition?.takeIf { it > 0L } ?: playbackState.position
+        resumeAfterMetadataWrite = if (isPlayingTrack && wasPlaying) {
+            { viewModel.resumeAfterMetadataChange(track, position) }
+        } else null
+
+        val metadataWriter: MetadataWriter = get()
+        val result = metadataWriter.writeMetadata(
+            track = track,
+            metadata = metadata,
+            onSecurityError = onSecurityError
+        )
+
+        if (result is Result.Success) {
+            resumeAfterMetadataWrite?.invoke()
+            resumeAfterMetadataWrite = null
+        }
+
+        return result
     }
 
     private fun checkMetadataWriteResult(result: Result<Unit, DataError.Local>) {

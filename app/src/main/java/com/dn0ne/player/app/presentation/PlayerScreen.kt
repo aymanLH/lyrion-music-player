@@ -6,6 +6,7 @@ import android.Manifest
 import android.app.Activity
 import android.app.RecoverableSecurityException
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -93,6 +94,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
@@ -175,24 +177,34 @@ fun PlayerScreen(
     var coverArtBitmapTrackId by remember {
         mutableStateOf<String?>(null)
     }
+    // Theme seed derived directly from a solid-color cover (e.g. an all-black or
+    // all-white thumbnail). Such covers yield a palette with no swatches, but we
+    // still want the theme to reflect the cover instead of the previous theme.
+    var solidCoverColor by remember {
+        mutableStateOf<Color?>(null)
+    }
     val colorToApply by remember(coverArtBitmap, persistedThemeSeed) {
         derivedStateOf {
-            if (coverArtBitmap != null) {
-                dominantColorState.result
-                    ?.paletteOrNull
-                    ?.swatches
-                    ?.sortedByDescending { it.population }
-                    ?.let { swatches ->
-                        val firstSwatch = swatches.first()
-                        val firstSwatchColorHct = firstSwatch.color.toHct()
-                        val firstSwatchPopulation = firstSwatch.population
-                        val moreChromatic = swatches.fastFirstOrNull {
-                            it.color.toHct().chroma - firstSwatchColorHct.chroma >= 30 &&
-                                    it.population.toFloat() / firstSwatchPopulation >= .1f
-                        }
-                        moreChromatic?.color ?: firstSwatch.color
-                    } ?: persistedThemeSeed?.let(::Color) ?: dominantColorState.color
-            } else persistedThemeSeed?.let(::Color) ?: dominantColorState.color
+            val fallbackColor = persistedThemeSeed?.let(::Color) ?: dominantColorState.color
+            if (coverArtBitmap == null) return@derivedStateOf fallbackColor
+
+            val swatches = dominantColorState.result
+                ?.paletteOrNull
+                ?.swatches
+                ?.sortedByDescending { it.population }
+            // A solid-color cover can yield a palette with no swatches, so never
+            // assume the list is non-empty: fall back to the cover's own color.
+            val firstSwatch = swatches?.firstOrNull()
+                ?: return@derivedStateOf (solidCoverColor ?: fallbackColor)
+            val firstSwatchColorHct = firstSwatch.color.toHct()
+            val firstSwatchPopulation = firstSwatch.population
+            val moreChromatic = if (firstSwatchPopulation > 0) {
+                swatches.fastFirstOrNull {
+                    it.color.toHct().chroma - firstSwatchColorHct.chroma >= 30 &&
+                            it.population.toFloat() / firstSwatchPopulation >= .1f
+                }
+            } else null
+            moreChromatic?.color ?: firstSwatch.color
         }
     }
 
@@ -200,6 +212,7 @@ fun PlayerScreen(
         if (currentTrackId == null) {
             coverArtBitmap = null
             coverArtBitmapTrackId = null
+            solidCoverColor = null
             dominantColorState.reset()
         }
     }
@@ -218,19 +231,28 @@ fun PlayerScreen(
         val result = snapshotFlow { dominantColorState.result }.filterNotNull().first()
         Log.d("YT_DEBUG", "Theme palette extraction finish trackId=$trackId thread=${Thread.currentThread().name} success=${result.paletteOrNull != null}")
         val swatches = result.paletteOrNull?.swatches?.sortedByDescending { it.population }
-        val extractedSeed = swatches?.let { paletteSwatches ->
+        val paletteSeed = swatches?.let { paletteSwatches ->
             val firstSwatch = paletteSwatches.firstOrNull()
             if (firstSwatch == null) null else {
                 val firstSwatchColorHct = firstSwatch.color.toHct()
                 val firstSwatchPopulation = firstSwatch.population
-                val moreChromatic = paletteSwatches.fastFirstOrNull {
-                    it.color.toHct().chroma - firstSwatchColorHct.chroma >= 30 &&
-                            it.population.toFloat() / firstSwatchPopulation >= .1f
-                }
+                val moreChromatic = if (firstSwatchPopulation > 0) {
+                    paletteSwatches.fastFirstOrNull {
+                        it.color.toHct().chroma - firstSwatchColorHct.chroma >= 30 &&
+                                it.population.toFloat() / firstSwatchPopulation >= .1f
+                    }
+                } else null
                 moreChromatic?.color ?: firstSwatch.color
             }
         }
-        if (result.paletteOrNull != null && extractedSeed != null) {
+        // A solid-color cover has no usable swatches, so use its actual color
+        // (black stays black, white stays white) as the theme seed.
+        val solidSeed = if (paletteSeed == null) {
+            withContext(Dispatchers.Default) { averageColorOf(bitmap) }
+        } else null
+        solidCoverColor = solidSeed
+        val extractedSeed = paletteSeed ?: solidSeed
+        if (extractedSeed != null) {
             viewModel.settings.updateAlbumArtTheme(extractedSeed.toArgb(), trackId)
         }
     }
@@ -1125,6 +1147,7 @@ fun PlayerScreen(
                                     val activeTrackId = viewModel.playbackState.value.currentTrack?.uri?.toString()
                                     if (trackId == activeTrackId) {
                                         Log.d("YT_DEBUG", "Theme cover callback trackId=$trackId bitmap=${bitmap != null}")
+                                        solidCoverColor = null
                                         coverArtBitmap = bitmap
                                         coverArtBitmapTrackId = trackId
                                     } else {
@@ -2270,4 +2293,47 @@ private fun Color.boostChroma(
     if (seedChroma < 10.0) return hct.toColor()
     val boostedChroma = hct.chroma + (targetChroma - hct.chroma).coerceAtLeast(0.0) * intensity
     return hct.withChroma(boostedChroma).toColor()
+}
+
+/**
+ * Average color of an image, sampled sparsely. Used as the theme seed when a cover
+ * has no usable palette swatches (for example a completely solid black or white
+ * image) so the theme still reflects the cover instead of the previous theme.
+ */
+private fun averageColorOf(bitmap: ImageBitmap): Color? {
+    val source = bitmap.asAndroidBitmap()
+    // Coil can hand us a hardware bitmap, which does not support getPixel().
+    // Copy it to a software bitmap before sampling pixels.
+    val image = source.copy(Bitmap.Config.ARGB_8888, false) ?: return null
+    val width = image.width
+    val height = image.height
+    if (width <= 0 || height <= 0) return null
+
+    val step = (minOf(width, height) / 32).coerceAtLeast(1)
+    var red = 0L
+    var green = 0L
+    var blue = 0L
+    var alphaSum = 0L
+    var y = 0
+    while (y < height) {
+        var x = 0
+        while (x < width) {
+            val pixel = image.getPixel(x, y)
+            val alpha = (pixel ushr 24) and 0xFF
+            if (alpha > 0) {
+                red += ((pixel shr 16) and 0xFF).toLong() * alpha
+                green += ((pixel shr 8) and 0xFF).toLong() * alpha
+                blue += (pixel and 0xFF).toLong() * alpha
+                alphaSum += alpha
+            }
+            x += step
+        }
+        y += step
+    }
+    if (alphaSum == 0L) return null
+    return Color(
+        red = (red / alphaSum).toInt(),
+        green = (green / alphaSum).toInt(),
+        blue = (blue / alphaSum).toInt()
+    )
 }
