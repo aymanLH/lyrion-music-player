@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Sort
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -136,6 +137,23 @@ fun TrackSortButton(
                 onClick = onSortOrderChange
             )
         }
+    }
+}
+
+@Composable
+fun ShufflePlayButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    IconButton(
+        onClick = onClick,
+        modifier = modifier
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.Shuffle,
+            contentDescription = context.resources.getString(R.string.shuffle_play)
+        )
     }
 }
 

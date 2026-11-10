@@ -10,11 +10,9 @@ import androidx.compose.animation.core.calculateTargetValue
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.rememberSplineBasedDecay
-import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -98,7 +96,8 @@ import android.util.Log
 import coil3.SingletonImageLoader
 import coil3.request.ImageRequest
 import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -632,24 +631,16 @@ fun ExpandedPlayer(
                             )
                         }
 
-                        AnimatedVisibility(
-                            visible = playbackState.playbackMode != PlaybackMode.Shuffle,
-                            enter = expandHorizontally(),
-                            exit = shrinkHorizontally()
-                        ) {
-                            IconButton(
-                                onClick = {
-                                    if (playbackState.playbackMode != PlaybackMode.Shuffle) {
-                                        showQueue = true
-                                    }
-                                }
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Rounded.QueueMusic,
-                                    contentDescription = context.resources.getString(R.string.show_queue),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                        IconButton(
+                            onClick = {
+                                showQueue = true
                             }
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.QueueMusic,
+                                contentDescription = context.resources.getString(R.string.show_queue),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
 
                         IconButton(
@@ -821,24 +812,16 @@ fun ExpandedPlayer(
                                     )
                                 }
 
-                                AnimatedVisibility(
-                                    visible = playbackState.playbackMode != PlaybackMode.Shuffle,
-                                    enter = expandHorizontally(),
-                                    exit = shrinkHorizontally()
-                                ) {
-                                    IconButton(
-                                        onClick = {
-                                            if (playbackState.playbackMode != PlaybackMode.Shuffle) {
-                                                showQueue = true
-                                            }
-                                        }
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.AutoMirrored.Rounded.QueueMusic,
-                                            contentDescription = context.resources.getString(R.string.show_queue),
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
+                                IconButton(
+                                    onClick = {
+                                        showQueue = true
                                     }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Rounded.QueueMusic,
+                                        contentDescription = context.resources.getString(R.string.show_queue),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
                                 }
 
                                 IconButton(
@@ -1004,6 +987,7 @@ fun ExpandedPlayer(
                 }
             )
         }
+
     }
 }
 
@@ -1043,6 +1027,7 @@ private fun PlayerCoverPager(
     val bitmaps = remember { mutableStateMapOf<String, ImageBitmap?>() }
     var measuredSize by remember { mutableStateOf(IntSize.Zero) }
     var userDragActive by remember { mutableStateOf(false) }
+    var userDragSettlePending by remember { mutableStateOf(false) }
     var dragQueueSignature by remember { mutableStateOf<String?>(null) }
     var pendingUserTarget by remember { mutableStateOf<Pair<String, Int>?>(null) }
     val latestQueueSignature by rememberUpdatedState(queueSignature)
@@ -1066,29 +1051,45 @@ private fun PlayerCoverPager(
             when (interaction) {
                 is DragInteraction.Start -> {
                     userDragActive = true
+                    userDragSettlePending = true
                     dragQueueSignature = latestQueueSignature
-                    Log.d("YT_DEBUG", "CoverPager drag start page=${pagerState.settledPage} queue=$queueSignature")
+                    Log.d("YT_DEBUG", "CoverPager drag start page=${pagerState.currentPage} queue=$queueSignature")
                 }
                 is DragInteraction.Stop -> {
-                    val dragSignature = dragQueueSignature
-                    snapshotFlow { pagerState.isScrollInProgress }.first { !it }
-                    val settled = pagerState.settledPage
-                    userDragActive = false
-                    dragQueueSignature = null
-                    if (dragSignature == latestQueueSignature && settled in latestQueue.indices && settled != latestCurrentIndex) {
-                        pendingUserTarget = latestQueueSignature to settled
-                        Log.d("YT_DEBUG", "CoverPager user settle page=$settled track=${latestQueue[settled].uri} queue=$latestQueueSignature")
-                        callback(settled)
-                    } else {
-                        Log.d("YT_DEBUG", "CoverPager user settle ignored page=$settled current=$latestCurrentIndex queueChanged=${dragSignature != latestQueueSignature}")
-                    }
+                    Log.d("YT_DEBUG", "CoverPager drag stop page=${pagerState.currentPage} (waiting for settle)")
                 }
                 is DragInteraction.Cancel -> {
-                    userDragActive = false
-                    dragQueueSignature = null
+                    Log.d("YT_DEBUG", "CoverPager drag cancel page=${pagerState.currentPage} (waiting for settle)")
                 }
             }
         }
+    }
+
+    // Commit a swipe only once the pager has actually settled. At DragInteraction.Stop the
+    // settle/fling animation has not run yet, so reading settledPage there returns the page
+    // the pager was on *before* the swipe. That made the callback select the previous track,
+    // leaving the cover one song ahead of playback. A long-lived observer is also important:
+    // a one-shot first { !isScrollInProgress } can observe a stale `false` and skip the
+    // settle entirely, which delayed the track change until the next swipe.
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.isScrollInProgress }
+            .distinctUntilChanged()
+            .filter { !it }
+            .collect {
+                if (!userDragSettlePending) return@collect
+                userDragSettlePending = false
+                userDragActive = false
+                val dragSignature = dragQueueSignature
+                dragQueueSignature = null
+                val settled = pagerState.currentPage
+                if (dragSignature == latestQueueSignature && settled in latestQueue.indices && settled != latestCurrentIndex) {
+                    pendingUserTarget = latestQueueSignature to settled
+                    Log.d("YT_DEBUG", "CoverPager user settle page=$settled track=${latestQueue[settled].uri} queue=$latestQueueSignature")
+                    callback(settled)
+                } else {
+                    Log.d("YT_DEBUG", "CoverPager user settle ignored page=$settled current=$latestCurrentIndex queueChanged=${dragSignature != latestQueueSignature}")
+                }
+            }
     }
 
     LaunchedEffect(targetIndex, queueSignature, userDragActive, pendingUserTarget) {

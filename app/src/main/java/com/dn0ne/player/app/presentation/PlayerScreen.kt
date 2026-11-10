@@ -114,6 +114,7 @@ import com.dn0ne.player.app.domain.track.Track
 import com.dn0ne.player.app.domain.track.filterPlaylists
 import com.dn0ne.player.app.domain.track.filterTracks
 import com.dn0ne.player.app.presentation.components.PlaylistSortButton
+import com.dn0ne.player.app.presentation.components.ShufflePlayButton
 import com.dn0ne.player.app.presentation.components.TrackSortButton
 import com.dn0ne.player.app.presentation.components.playback.PlayerSheet
 import com.dn0ne.player.app.presentation.components.playlist.AddToOrCreatePlaylistBottomSheet
@@ -653,6 +654,9 @@ fun PlayerScreen(
                                     )
                                 )
                             },
+                            onShufflePlayClick = { tracks ->
+                                viewModel.onEvent(PlayerScreenEvent.OnShufflePlayClick(tracks))
+                            },
                             onPlaylistSelection = { playlist ->
                                 viewModel.onEvent(
                                     PlayerScreenEvent.OnPlaylistSelection(
@@ -881,6 +885,9 @@ fun PlayerScreen(
                                             order
                                         )
                                     )
+                                },
+                                onShufflePlayClick = { tracks ->
+                                    viewModel.onEvent(PlayerScreenEvent.OnShufflePlayClick(tracks))
                                 },
                                 onBackClick = {
                                     navController.navigateUp()
@@ -1380,6 +1387,7 @@ fun MainPlayerScreen(
     playlistSortOrder: SortOrder,
     onTrackSortChange: (TrackSort?, SortOrder?) -> Unit,
     onPlaylistSortChange: (PlaylistSort?, SortOrder?) -> Unit,
+    onShufflePlayClick: (List<Track>) -> Unit,
     onPlaylistSelection: (Playlist) -> Unit,
     onAlbumPlaylistSelection: (Playlist) -> Unit,
     onArtistPlaylistSelection: (Playlist) -> Unit,
@@ -1486,6 +1494,20 @@ fun MainPlayerScreen(
                                             onTrackSortChange(null, it)
                                         }
                                     )
+
+                                    AnimatedVisibility(
+                                        visible = collapseFraction > 0.55f,
+                                        enter = fadeIn() + expandHorizontally(),
+                                        exit = fadeOut() + shrinkHorizontally()
+                                    ) {
+                                        ShufflePlayButton(
+                                            onClick = {
+                                                onShufflePlayClick(
+                                                    trackList.filterTracks(searchFieldValue)
+                                                )
+                                            }
+                                        )
+                                    }
                                 } else {
                                     PlaylistSortButton(
                                         sort = playlistSort,
@@ -1501,7 +1523,11 @@ fun MainPlayerScreen(
                             }
 
                             Row {
-                                if (tab != Tab.Tracks && collapseFraction > 0.55f) {
+                                AnimatedVisibility(
+                                    visible = tab != Tab.Tracks && collapseFraction > 0.55f,
+                                    enter = fadeIn() + expandHorizontally(),
+                                    exit = fadeOut() + shrinkHorizontally()
+                                ) {
                                     IconButton(
                                         onClick = onGridPlaylistsClick
                                     ) {

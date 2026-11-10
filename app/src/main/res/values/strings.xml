@@ -69,6 +69,7 @@
     <string name="sort_ascending">Sort ascending</string>
     <string name="sort_descending">Sort descending</string>
     <string name="track_count">Track Count</string>
+    <string name="shuffle_play">Shuffle play</string>
 
     <!-- Track search -->
     <string name="close_track_search">Close track search</string>

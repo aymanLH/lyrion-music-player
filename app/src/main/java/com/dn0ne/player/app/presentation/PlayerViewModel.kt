@@ -519,6 +519,38 @@ class PlayerViewModel(
                 }
             }
 
+            is OnShufflePlayClick -> {
+                if (event.tracks.isEmpty()) return
+
+                player?.let { player ->
+                    val shuffledTracks = event.tracks.shuffled()
+                    val playlist = Playlist(name = null, trackList = shuffledTracks)
+
+                    setPlayerPlaybackMode(PlaybackMode.Shuffle)
+                    player.clearMediaItems()
+                    player.addMediaItems(shuffledTracks.fastMap { it.mediaItem })
+                    player.prepare()
+                    player.seekTo(0, 0L)
+                    player.play()
+
+                    _playbackState.update {
+                        it.copy(
+                            playlist = playlist,
+                            currentTrack = shuffledTracks.first(),
+                            currentMediaItemIndex = 0,
+                            position = 0,
+                            playbackMode = PlaybackMode.Shuffle
+                        )
+                    }
+
+                    viewModelScope.launch(Dispatchers.IO) {
+                        savedPlayerState.playlist = playlist
+                        savedPlayerState.track = shuffledTracks.first()
+                        savedPlayerState.playbackMode = PlaybackMode.Shuffle
+                    }
+                }
+            }
+
             OnPauseClick -> {
                 player?.run {
                     pause()
